@@ -1,0 +1,16 @@
+{
+  "welcome_text": "🔥 **Welcome to AniToon Promax Bot** 🔥\n\nHi {name}, I am the ultimate file renamer. I support files up to **4GB** with lightning speed and custom track branding.",
+  "plan_status": "📊 **Plan Status**: {status}",
+  "used_today": "🚀 **Used Today**: {used}",
+  "remaining_quota": "⏳ **Remaining**: {remain}",
+  "file_detected": "📂 **File Detected**: `{filename}`\n\nPlease enter the **New Filename** for this file. I will automatically apply your AniToon track branding.",
+  "rename_error_extension": "❌ **Error**: Please include the file extension (e.g., `.mkv` or `.mp4`).",
+  "downloading": "📥 **AniToon: Preparing download...**",
+  "branding_tracks": "🏷️ **AniToon: Rewriting internal metadata tracks...**",
+  "uploading": "📤 **AniToon: Initializing high-speed upload...**",
+  "daily_limit_reached": "🚫 **Daily Limit Reached!**\n\nYou have used your free {limit} quota. Upgrade to Premium for unlimited 4GB renames.",
+  "premium_perks": "💎 **AniToon Premium Plans** 💎\n\nUpgrade your account to unlock premium features:\n\n✅ **File Limit**: 4GB per file\n✅ **Daily Quota**: Unlimited\n✅ **Priority**: High-speed processing\n✅ **Ad-Free**: No restrictions\n\nContact @AniToon_Official to upgrade now!",
+  "help_text": "❓ **How to use AniToon Promax:**\n\n1️⃣ **Rename**: Send any file or video.\n2️⃣ **Thumbnail**: Send any image to set it permanently.\n3️⃣ **Captions**: Use `/set_caption` with `{filename}`.\n4️⃣ **Metadata**: Internal track names can be customized from the metadata settings.",
+  "about_text": "🤖 **Bot Name**: AniToon Promax\n📂 **4GB Support**: Active ✅\n🏷️ **Branding**: Internal Track Metadata ✅\n⚡ **Speed**: 100 Concurrent Workers ✅\n👤 **Developer**: @AniToon_Official",
+  "metadata_dashboard": "🏷️ **AniToon Metadata Branding**\n\nYour current branding for internal tracks:\n• **Audio Track Name**: `{audio}`\n• **Subtitle Track Name**: `{sub}`"
+}
