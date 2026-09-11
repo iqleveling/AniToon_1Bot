@@ -13,7 +13,11 @@ class Bot(Client):
             api_id=Config.API_ID,
             api_hash=Config.API_HASH,
             bot_token=Config.BOT_TOKEN,
+
+            # Promax: Increased workers for high-speed concurrent tasks
             workers=100,
+
+            # Modular: Automatically loads every file in the /plugins folder
             plugins=dict(root="plugins")
         )
 
@@ -23,9 +27,9 @@ class Bot(Client):
         me = await self.get_me()
         print(f"✅ {me.first_name} [Promax Edition] Started Successfully!")
 
-        # Initialize the Premium User Client
+        # Choice 1-B: Initialize the Premium Client for 4GB Support
         if Config.STRING_SESSION:
-            print("💎 Initializing Premium Client...")
+            print("💎 Initializing Premium Client for 4GB Support...")
 
             self.USER = Client(
                 name="Premium_User",
@@ -38,10 +42,9 @@ class Bot(Client):
             print("✅ Premium Session Active!")
 
     async def stop(self, *args):
-        # Stop the bot
         await super().stop()
 
-        # Stop the Premium User Client safely
+        # Ensure the Premium session also disconnects safely
         if hasattr(self, "USER"):
             await self.USER.stop()
 
