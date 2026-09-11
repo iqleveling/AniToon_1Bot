@@ -3,3 +3,8 @@ tgcrypto
 motor
 pymongo
 python-dotenv
+flask
+ffmpeg-python
+hachoir
+aiofiles
+pyyaml
