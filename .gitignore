@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+bin/
+lib/
+include/
+
+# Secrets
+.env
+.env.*
+config.env
+
+# Pyrogram sessions
+*.session
+*.session-journal
+
+# Temporary files
+downloads/
+temp/
+tmp/
+*.log
+
+# Media files
+*.mp4
+*.mkv
+*.webm
+*.avi
+*.mov
+*.flac
+*.mp3
+*.jpg
+*.jpeg
+*.png
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE / editor files
+.vscode/
+.idea/
+*.swp
+*.swo
