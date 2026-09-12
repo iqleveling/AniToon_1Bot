@@ -1,82 +1,59 @@
+import logging
+
 from pyrogram import Client, filters
-from pyrogram.types import Message
+from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from config import Config
 from helper.database import db
-from helper.plans import get_plan
+from helper.plans import get_plan, all_paid_plans
 from helper.utils import humanbytes
 from plugins.ui import main_menu
 
+log = logging.getLogger(__name__)
 
-# ============================================================
-# /START
-# ============================================================
 
-@Client.on_message(
-    filters.private
-    & filters.command("start")
-)
-async def start(
-    client: Client,
-    message: Message,
-):
+async def _force_sub_ok(client, user_id: int) -> bool:
+    for channel in Config.FORCE_SUB:
+        try:
+            member = await client.get_chat_member(channel, user_id)
+            if str(member.status).lower() in {"left", "kicked", "banned"}:
+                return False
+        except Exception:
+            # A bad/missing force-sub channel must not kill /start.
+            log.warning("Force-sub check failed for %s", channel, exc_info=True)
+    return True
+
+
+async def _reply_start(client, message: Message):
     user_id = message.from_user.id
+    bot_id = int(getattr(client, "bot_id", 0))
 
-    bot_id = int(
-        getattr(
-            client,
-            "bot_id",
-            0,
-        )
-    )
-
-    # Register user once.
-    if not await db.is_user_exist(user_id):
+    # Always make a DB user record, but don't make a temporary Mongo outage
+    # make /start completely silent.
+    try:
         await db.add_user(user_id)
+    except Exception:
+        log.exception("Could not create/find user %s", user_id)
 
-    # --------------------------------------------------------
-    # Main bot deep-link from clone payment button.
-    # Example: /start plans_123456
-    # --------------------------------------------------------
+    # Main-bot deep link for clone purchases.
     if (
         getattr(client, "is_main_bot", False)
         and len(message.command) > 1
         and message.command[1].startswith("plans_")
     ):
         try:
-            target_bot_id = int(
-                message.command[1].split("_", 1)[1]
-            )
+            target_bot_id = int(message.command[1].split("_", 1)[1])
         except (ValueError, IndexError):
             target_bot_id = bot_id
 
-        from helper.plans import all_paid_plans
-        from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-
-        buttons = []
-
-        for plan_option in all_paid_plans():
-            buttons.append(
-                [
-                    InlineKeyboardButton(
-                        f"{plan_option.name} — {plan_option.stars} ⭐",
-                        callback_data=(
-                            f"buy:{plan_option.key}:"
-                            f"{target_bot_id}"
-                        ),
-                    )
-                ]
-            )
-
-        buttons.append(
-            [
-                InlineKeyboardButton(
-                    "⬅️ Back",
-                    callback_data="start",
-                )
-            ]
-        )
-
+        buttons = [
+            [InlineKeyboardButton(
+                f"{plan.name} — {plan.stars} ⭐",
+                callback_data=f"buy:{plan.key}:{target_bot_id}",
+            )]
+            for plan in all_paid_plans()
+        ]
+        buttons.append([InlineKeyboardButton("⬅️ Back", callback_data="start")])
         await message.reply_text(
             "💎 **AniToon Premium Plans**\n\n"
             "Choose a plan for 30 days:\n\n"
@@ -87,87 +64,43 @@ async def start(
             "⭐ Payment is handled by AniToon_1Bot.",
             reply_markup=InlineKeyboardMarkup(buttons),
         )
-
         return
 
-    # --------------------------------------------------------
-    # Force-subscription check.
-    # We only block when Telegram positively reports the user
-    # is not a member. If the bot cannot inspect the channel,
-    # do not break normal bot operation.
-    # --------------------------------------------------------
-    if Config.FORCE_SUB:
-        try:
-            member = await client.get_chat_member(
-                Config.FORCE_SUB,
-                user_id,
-            )
-
-            blocked_statuses = {
-                "left",
-                "kicked",
-            }
-
-            if str(member.status).lower() in blocked_statuses:
-                await message.reply_text(
-                    "🚫 **Access Denied**\n\n"
-                    "Please join the required channel and then "
-                    "send `/start` again."
-                )
-                return
-
-        except Exception:
-            pass
-
-    subscription = await db.get_subscription(
-        user_id,
-        bot_id,
-    )
-
-    plan = get_plan(
-        subscription.get(
-            "plan",
-            "free",
+    if not await _force_sub_ok(client, user_id):
+        await message.reply_text(
+            "🚫 **Access Denied**\n\n"
+            "Please join the required channel(s) and send `/start` again."
         )
-    )
+        return
 
-    used = await db.get_usage(
-        user_id,
-        bot_id,
-    )
+    # Defaults let the bot still answer if MongoDB is temporarily unavailable.
+    plan_name = "🆓 Free"
+    used = 0
+    remaining = 10 * 1024 * 1024 * 1024
 
-    remaining = max(
-        plan.daily_limit - used,
-        0,
-    )
+    try:
+        subscription = await db.get_subscription(user_id, bot_id)
+        plan = get_plan(subscription.get("plan", "free"))
+        used = await db.get_usage(user_id, bot_id)
+        plan_name = plan.name
+        remaining = max(plan.daily_limit - used, 0)
+    except Exception:
+        log.exception("Database read failed during /start")
 
     welcome_text = (
         "🔥 **Welcome to AniToon Bot** 🔥\n\n"
         f"👋 Hello **{message.from_user.first_name}**!\n\n"
-        "📂 Send me any file, video or audio "
-        "to rename and process it.\n\n"
-        f"💎 **Plan:** {plan.name}\n"
-        f"🚀 **Used Today:** "
-        f"`{humanbytes(used)}`\n"
-        f"⏳ **Remaining:** "
-        f"`{humanbytes(remaining)}`\n\n"
-        "✂️ Large files are automatically split "
-        "into smaller parts when required."
+        "📂 Send me any file, video or audio to rename and process it.\n\n"
+        f"💎 **Plan:** {plan_name}\n"
+        f"🚀 **Used Today:** `{humanbytes(used)}`\n"
+        f"⏳ **Remaining:** `{humanbytes(remaining)}`\n\n"
+        "🖼 Send an image to save a custom thumbnail.\n"
+        "📝 Use `/setcaption` for a custom caption.\n"
+        "🏷 Use `/metadata` for audio/subtitle track names."
     )
 
-    is_main = getattr(
-        client,
-        "is_main_bot",
-        False,
-    )
-
-    keyboard = main_menu(is_main)
-
-    start_pic = getattr(
-        Config,
-        "START_PIC",
-        "",
-    )
+    keyboard = main_menu(getattr(client, "is_main_bot", False))
+    start_pic = Config.START_PIC
 
     if start_pic:
         try:
@@ -178,9 +111,22 @@ async def start(
             )
             return
         except Exception:
-            pass
+            log.exception("START_PIC failed; falling back to text")
 
-    await message.reply_text(
-        welcome_text,
-        reply_markup=keyboard,
-    )
+    await message.reply_text(welcome_text, reply_markup=keyboard)
+
+
+@Client.on_message(filters.private & filters.command("start"))
+async def start(client: Client, message: Message):
+    try:
+        await _reply_start(client, message)
+    except Exception:
+        # /start must never be silent because a secondary feature failed.
+        log.exception("/start handler failed")
+        try:
+            await message.reply_text(
+                "⚠️ AniToon is online, but a temporary setup error occurred. "
+                "Please send `/start` again in a few seconds."
+            )
+        except Exception:
+            pass
