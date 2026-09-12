@@ -7,39 +7,14 @@ from pyrogram.types import (
 )
 
 from helper.database import db
+from plugins.ui import edit_callback_message
 
 
-# --- METADATA SETTINGS ---
-@Client.on_message(
-    filters.private & filters.command("metadata")
-)
-async def metadata_settings(
-    client: Client,
-    message: Message,
-):
-    """
-    Displays the current metadata branding settings.
-    """
+DEFAULT_METADATA_NAME = "AniToon Official"
 
-    user_id = message.from_user.id
 
-    user_data = await db.get_user_data(user_id)
-
-    if not user_data:
-        await db.add_user(user_id)
-        user_data = await db.get_user_data(user_id)
-
-    audio_pref = user_data.get(
-        "audio_name",
-        "AniToon Official",
-    )
-
-    sub_pref = user_data.get(
-        "sub_name",
-        "AniToon Official",
-    )
-
-    keyboard = InlineKeyboardMarkup(
+def metadata_keyboard():
+    return InlineKeyboardMarkup(
         [
             [
                 InlineKeyboardButton(
@@ -59,35 +34,85 @@ async def metadata_settings(
                     callback_data="reset_metadata",
                 )
             ],
+            [
+                InlineKeyboardButton(
+                    "🔙 Back",
+                    callback_data="settings",
+                )
+            ],
         ]
     )
 
-    await message.reply_text(
+
+async def show_metadata(
+    client: Client,
+    chat_id: int,
+    message=None,
+):
+    user_id = int(chat_id)
+
+    if not await db.is_user_exist(user_id):
+        await db.add_user(user_id)
+
+    user = await db.get_user_data(user_id) or {}
+
+    audio_name = user.get(
+        "audio_name",
+        DEFAULT_METADATA_NAME,
+    )
+    subtitle_name = user.get(
+        "sub_name",
+        DEFAULT_METADATA_NAME,
+    )
+
+    text = (
         "🏷️ **AniToon Metadata Branding**\n\n"
-        "Your current internal track names:\n\n"
-        f"🎵 **Audio Track:** `{audio_pref}`\n"
-        f"📜 **Subtitle Track:** `{sub_pref}`\n\n"
-        "These names can be applied to media during "
-        "the FFmpeg processing stage.",
-        reply_markup=keyboard,
+        f"🎵 **Audio Track:** `{audio_name}`\n"
+        f"📜 **Subtitle Track:** `{subtitle_name}`\n\n"
+        "These names are applied during FFmpeg processing."
+    )
+
+    if message is not None:
+        await message.reply_text(
+            text,
+            reply_markup=metadata_keyboard(),
+        )
+    else:
+        await client.send_message(
+            user_id,
+            text,
+            reply_markup=metadata_keyboard(),
+        )
+
+
+@Client.on_message(
+    filters.private
+    & filters.command(
+        [
+            "metadata",
+            "metasettings",
+        ]
+    )
+)
+async def metadata_settings(
+    client: Client,
+    message: Message,
+):
+    await show_metadata(
+        client,
+        message.from_user.id,
+        message=message,
     )
 
 
-# --- SET AUDIO TRACK NAME ---
 @Client.on_callback_query(
-    filters.regex("^set_audio_meta$")
+    filters.regex(r"^set_audio_meta$")
 )
 async def cb_set_audio(
     client: Client,
     cb,
 ):
-    """
-    Opens the Audio Track Name input prompt.
-    """
-
     await cb.answer()
-
-    await cb.message.delete()
 
     await client.send_message(
         chat_id=cb.from_user.id,
@@ -102,21 +127,14 @@ async def cb_set_audio(
     )
 
 
-# --- SET SUBTITLE TRACK NAME ---
 @Client.on_callback_query(
-    filters.regex("^set_sub_meta$")
+    filters.regex(r"^set_sub_meta$")
 )
 async def cb_set_sub(
     client: Client,
     cb,
 ):
-    """
-    Opens the Subtitle Track Name input prompt.
-    """
-
     await cb.answer()
-
-    await cb.message.delete()
 
     await client.send_message(
         chat_id=cb.from_user.id,
@@ -131,54 +149,41 @@ async def cb_set_sub(
     )
 
 
-# --- RESET METADATA ---
 @Client.on_callback_query(
-    filters.regex("^reset_metadata$")
+    filters.regex(r"^reset_metadata$")
 )
 async def cb_reset_meta(
     client: Client,
     cb,
 ):
-    """
-    Resets the user's metadata names to the default values.
-    """
-
-    await db.col.update_one(
-        {"id": cb.from_user.id},
-        {
-            "$set": {
-                "audio_name": "AniToon Official",
-                "sub_name": "AniToon Official",
-            }
-        },
-        upsert=True,
+    await db.set_metadata(
+        cb.from_user.id,
+        DEFAULT_METADATA_NAME,
+        DEFAULT_METADATA_NAME,
     )
 
     await cb.answer(
-        "Metadata Reset Successfully! ✅",
+        "Metadata reset successfully ✅",
         show_alert=True,
-    )
-
-    keyboard = InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton(
-                    "⚙️ Open Metadata",
-                    callback_data="metadata_settings",
-                )
-            ]
-        ]
     )
 
     await cb.message.edit_text(
         "🔄 **Metadata branding reset to default.**\n\n"
         "🎵 Audio: `AniToon Official`\n"
         "📜 Subtitle: `AniToon Official`",
-        reply_markup=keyboard,
+        reply_markup=InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        "🏷 Open Metadata",
+                        callback_data="metadata_settings",
+                    )
+                ]
+            ]
+        ),
     )
 
 
-# --- PROCESS METADATA REPLIES ---
 @Client.on_message(
     filters.private
     & filters.reply
@@ -188,10 +193,6 @@ async def handle_meta_replies(
     client: Client,
     message: Message,
 ):
-    """
-    Processes replies to the Audio/Subtitle ForceReply prompts.
-    """
-
     reply = message.reply_to_message
 
     if not reply or not reply.text:
@@ -205,16 +206,10 @@ async def handle_meta_replies(
             "❌ **Metadata name cannot be empty.**"
         )
 
-    # Audio Track
     if "audio track name" in prompt_text:
-        await db.col.update_one(
-            {"id": message.from_user.id},
-            {
-                "$set": {
-                    "audio_name": new_value
-                }
-            },
-            upsert=True,
+        await db.set_audio_name(
+            message.from_user.id,
+            new_value,
         )
 
         await message.reply_text(
@@ -222,16 +217,10 @@ async def handle_meta_replies(
             f"🎵 `{new_value}`"
         )
 
-    # Subtitle Track
     elif "subtitle track name" in prompt_text:
-        await db.col.update_one(
-            {"id": message.from_user.id},
-            {
-                "$set": {
-                    "sub_name": new_value
-                }
-            },
-            upsert=True,
+        await db.set_subtitle_name(
+            message.from_user.id,
+            new_value,
         )
 
         await message.reply_text(
