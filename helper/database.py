@@ -2,6 +2,8 @@ import motor.motor_asyncio
 
 from datetime import datetime, timedelta
 
+from config import Config
+
 
 class Database:
     def __init__(
