@@ -141,3 +141,18 @@ class Config:
             "0",
         )
     )
+
+
+    # ============================================================
+    # DEFAULT METADATA NAMES
+    # ============================================================
+
+    AUDIO_NAME = os.environ.get(
+        "AUDIO_NAME",
+        "AniToon Official",
+    ).strip() or "AniToon Official"
+
+    SUBTITLE_NAME = os.environ.get(
+        "SUBTITLE_NAME",
+        "AniToon Official",
+    ).strip() or "AniToon Official"
