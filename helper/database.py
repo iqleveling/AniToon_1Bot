@@ -114,6 +114,7 @@ class Database:
             "free",
         )
 
+        # Automatically downgrade expired paid plans.
         if (
             plan != "free"
             and expires_at
@@ -417,6 +418,7 @@ class Database:
         stars,
         charge_id,
     ):
+        # Prevent duplicate Telegram payment processing.
         if await self.payment_exists(
             charge_id
         ):
@@ -489,6 +491,12 @@ class Database:
         )
 
     def get_all_clones(self):
+        """
+        Return a Motor cursor directly.
+
+        This is intentionally NOT async because Motor's
+        find() already returns an async cursor.
+        """
         return self.clones.find({})
 
     async def set_clone_status(
@@ -522,6 +530,15 @@ class Database:
 # ============================================================
 # DATABASE INSTANCE
 # ============================================================
+
+# IMPORTANT:
+# Config must be imported above.
+# DATABASE_URL comes from Render's environment variables.
+if not Config.DATABASE_URL:
+    raise RuntimeError(
+        "DATABASE_URL is not configured. "
+        "Please set DATABASE_URL in Render Environment Variables."
+    )
 
 db = Database(
     Config.DATABASE_URL,
