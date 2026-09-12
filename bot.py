@@ -1,4 +1,3 @@
-import asyncio
 import logging
 
 from pyrogram import Client
@@ -33,6 +32,8 @@ class Bot(Client):
         self.is_main_bot = True
         self.is_clone_bot = False
 
+        self.bot_id = 0
+
         self.clone_manager = None
 
 
@@ -41,29 +42,22 @@ class Bot(Client):
 
         me = await self.get_me()
 
+        self.bot_id = me.id
+
         print(
             f"✅ {me.first_name} "
             "[Promax Edition] Started Successfully!"
         )
 
-        # --------------------------------------------------------
-        # CLONE MANAGER
-        # --------------------------------------------------------
-
         if Config.IS_CLONE_ALLOWED:
-            self.clone_manager = CloneManager(
-                self
+            self.clone_manager = (
+                CloneManager(self)
             )
 
             await self.clone_manager.start_all()
 
             print(
                 "🤖 Clone Engine: Enabled"
-            )
-
-        else:
-            print(
-                "🤖 Clone Engine: Disabled"
             )
 
 
