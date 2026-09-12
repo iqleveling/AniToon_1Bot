@@ -3,9 +3,9 @@ from pyrogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
     ForceReply,
-    LabeledPrice,
 )
 from pyrogram.raw.types import (
+    LabeledPrice,
     UpdateBotPrecheckoutQuery,
 )
 from pyrogram.raw.functions.messages import (
@@ -59,10 +59,7 @@ async def send_plan_menu(
         buttons.append(
             [
                 InlineKeyboardButton(
-                    (
-                        f"{plan.name} • "
-                        f"{plan.stars} ⭐"
-                    ),
+                    f"{plan.name} • {plan.stars} ⭐",
                     callback_data=(
                         f"buy:{plan.key}:"
                         f"{int(target_bot_id)}"
@@ -199,6 +196,7 @@ async def user_plan_status(
                 ]
             ]
         )
+
     elif Config.MAIN_BOT_USERNAME:
         keyboard = InlineKeyboardMarkup(
             [
@@ -214,6 +212,7 @@ async def user_plan_status(
                 ]
             ]
         )
+
     else:
         keyboard = None
 
@@ -304,6 +303,7 @@ async def buy_plan(
     match = callback_query.matches[0]
 
     plan_key = match.group(1)
+
     target_bot_id = int(
         match.group(2)
     )
@@ -321,9 +321,7 @@ async def buy_plan(
     try:
         await client.send_invoice(
             chat_id=callback_query.from_user.id,
-            title=(
-                f"AniToon {plan.name}"
-            ),
+            title=f"AniToon {plan.name}",
             description=(
                 f"{plan.name} plan for 30 days. "
                 f"Daily limit: "
@@ -351,7 +349,7 @@ async def buy_plan(
 
 
 # ============================================================
-# PRE-CHECKOUT RAW UPDATE
+# PRE-CHECKOUT
 # ============================================================
 
 @Client.on_raw_update()
@@ -416,9 +414,7 @@ async def pre_checkout_handler(
             plan_key
         )
 
-        currency = update.currency
-
-        if currency != "XTR":
+        if update.currency != "XTR":
             await client.invoke(
                 SetBotPrecheckoutResults(
                     query_id=update.query_id,
@@ -486,9 +482,7 @@ async def successful_payment(
     if not is_main_bot(client):
         return
 
-    payment = (
-        message.successful_payment
-    )
+    payment = message.successful_payment
 
     if not payment:
         return
@@ -571,10 +565,8 @@ async def successful_payment(
             )
         )
 
-        expires_at = (
-            subscription.get(
-                "expires_at"
-            )
+        expires_at = subscription.get(
+            "expires_at"
         )
 
         expiry_text = (
@@ -602,7 +594,8 @@ async def successful_payment(
         )
 
         await message.reply_text(
-            "⚠️ **Payment received, but activation failed.**\n\n"
+            "⚠️ **Payment received, "
+            "but activation failed.**\n\n"
             "Please use `/paysupport`."
         )
 
@@ -737,6 +730,7 @@ async def process_clone_token(
         )
 
         await test_client.stop()
+
         test_client = None
 
         existing = (
