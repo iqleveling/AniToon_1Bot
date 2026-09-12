@@ -1,296 +1,201 @@
-import os
-import sys
-import asyncio
-
 from pyrogram import Client, filters
-from pyrogram.types import Message
+from pyrogram.types import (
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+    CallbackQuery,
+)
 
 from config import Config
 from helper.database import db
+from helper.plans import get_plan
+from helper.utils import humanbytes
 
 
-# ============================================================
-# MAIN BOT CHECK
-# ============================================================
-
-def main_bot_only(client):
-    return getattr(
-        client,
-        "is_main_bot",
-        False,
+@Client.on_callback_query(
+    filters.regex(
+        r"^(start|help|about|settings)$"
     )
-
-
-# ============================================================
-# USERS
-# ============================================================
-
-@Client.on_message(
-    filters.private
-    & filters.command("users")
-    & filters.user(Config.ADMIN)
 )
-async def users_stats(
+async def navigation(
     client: Client,
-    message: Message,
+    query: CallbackQuery,
 ):
-    if not main_bot_only(client):
-        return
+    data = query.data
+    user_id = query.from_user.id
 
-    count = await db.total_users_count()
+    await query.answer()
 
-    await message.reply_text(
-        "📊 **AniToon Owner Statistics**\n\n"
-        f"👥 **Total Users:** `{count}`"
-    )
-
-
-# ============================================================
-# BROADCAST
-# ============================================================
-
-@Client.on_message(
-    filters.private
-    & filters.command("broadcast")
-    & filters.user(Config.ADMIN)
-)
-async def broadcast_handler(
-    client: Client,
-    message: Message,
-):
-    if not main_bot_only(client):
-        return
-
-    if not message.reply_to_message:
-        return await message.reply_text(
-            "❌ Reply to the message you want to broadcast."
+    if data == "start":
+        bot_id = getattr(
+            client,
+            "bot_id",
+            0,
         )
 
-    status = await message.reply_text(
-        "📣 **Broadcast Started...**"
-    )
-
-    success = 0
-    failed = 0
-
-    async for user in await db.get_all_users():
-        user_id = user.get("id")
-
-        if not user_id:
-            continue
-
-        try:
-            await message.reply_to_message.copy(
-                chat_id=user_id
+        subscription = (
+            await db.get_subscription(
+                user_id,
+                bot_id,
             )
+        )
 
-            success += 1
-
-            await asyncio.sleep(
-                0.05
+        plan = get_plan(
+            subscription.get(
+                "plan",
+                "free",
             )
+        )
 
-        except Exception:
-            failed += 1
+        used = await db.get_usage(
+            user_id,
+            bot_id,
+        )
 
-    await status.edit_text(
-        "📣 **Broadcast Complete**\n\n"
-        f"✅ **Sent:** `{success}`\n"
-        f"❌ **Failed:** `{failed}`"
-    )
+        remaining = max(
+            plan.daily_limit - used,
+            0,
+        )
+
+        await query.message.edit_text(
+            "🔥 **Welcome to AniToon Bot** 🔥\n\n"
+            f"💎 **Plan:** {plan.name}\n"
+            f"🚀 **Used Today:** "
+            f"`{humanbytes(used)}`\n"
+            f"⏳ **Remaining:** "
+            f"`{humanbytes(remaining)}`\n\n"
+            "Select an option below:",
+            reply_markup=InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton(
+                            "🛠 Help & Usage",
+                            callback_data="help",
+                        ),
+                        InlineKeyboardButton(
+                            "ℹ️ About Bot",
+                            callback_data="about",
+                        ),
+                    ],
+                    [
+                        InlineKeyboardButton(
+                            "⚙️ Settings",
+                            callback_data="settings",
+                        ),
+                        InlineKeyboardButton(
+                            "💎 Buy Premium",
+                            callback_data="upgrade",
+                        ),
+                    ],
+                ]
+            ),
+        )
+
+    elif data == "help":
+        await query.message.edit_text(
+            "❓ **AniToon Help**\n\n"
+            "📂 Send a file or video.\n"
+            "✏️ Enter the new filename.\n"
+            "🏷️ Metadata is processed automatically.\n"
+            "🖼️ Custom thumbnails are supported.\n"
+            "📝 Custom captions are supported.\n"
+            "✂️ Large files can be split into parts.\n\n"
+            "💎 Use **Buy Premium** to view the plans.",
+            reply_markup=InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton(
+                            "🧩 How to Join Parts",
+                            callback_data="how_to_join",
+                        )
+                    ],
+                    [
+                        InlineKeyboardButton(
+                            "⬅️ Back",
+                            callback_data="start",
+                        )
+                    ],
+                ]
+            ),
+        )
+
+    elif data == "about":
+        await query.message.edit_text(
+            "🤖 **AniToon Bot**\n\n"
+            "📂 File Renaming ✅\n"
+            "🏷️ Metadata Processing ✅\n"
+            "🖼️ Thumbnail Support ✅\n"
+            "📝 Caption Support ✅\n"
+            "✂️ File Splitting ✅\n"
+            "⭐ Telegram Stars Payments ✅\n\n"
+            "👤 **Developer:** @AniToon_Official",
+            reply_markup=InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton(
+                            "⬅️ Back",
+                            callback_data="start",
+                        )
+                    ]
+                ]
+            ),
+        )
+
+    elif data == "settings":
+        thumb = await db.get_thumbnail(
+            user_id
+        )
+
+        caption = await db.get_caption(
+            user_id
+        )
+
+        await query.message.edit_text(
+            "⚙️ **AniToon Settings**\n\n"
+            f"🖼️ **Thumbnail:** "
+            f"{'✅ Saved' if thumb else '❌ Not Set'}\n"
+            f"📝 **Caption:** "
+            f"{'✅ Saved' if caption else '❌ Not Set'}\n\n"
+            "Use the available commands to change "
+            "your settings.",
+            reply_markup=InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton(
+                            "⬅️ Back",
+                            callback_data="start",
+                        )
+                    ]
+                ]
+            ),
+        )
 
 
-# ============================================================
-# PREMIUM
-# ============================================================
-
-@Client.on_message(
-    filters.private
-    & filters.command("addpremium")
-    & filters.user(Config.ADMIN)
+@Client.on_callback_query(
+    filters.regex("^how_to_join$")
 )
-async def upgrade_user(
-    client: Client,
-    message: Message,
+async def how_to_join(
+    client,
+    query,
 ):
-    if not main_bot_only(client):
-        return
+    await query.answer()
 
-    if len(message.command) < 2:
-        return await message.reply_text(
-            "❌ **Usage:**\n"
-            "`/addpremium <user_id>`"
-        )
-
-    try:
-        user_id = int(
-            message.command[1]
-        )
-    except ValueError:
-        return await message.reply_text(
-            "❌ Invalid user ID."
-        )
-
-    if not await db.is_user_exist(
-        user_id
-    ):
-        return await message.reply_text(
-            "❌ User is not registered."
-        )
-
-    await db.set_premium(
-        user_id,
-        True,
-    )
-
-    await message.reply_text(
-        f"💎 User `{user_id}` "
-        "**upgraded to Premium.**"
-    )
-
-
-@Client.on_message(
-    filters.private
-    & filters.command("remove_premium")
-    & filters.user(Config.ADMIN)
-)
-async def downgrade_user(
-    client: Client,
-    message: Message,
-):
-    if not main_bot_only(client):
-        return
-
-    if len(message.command) < 2:
-        return await message.reply_text(
-            "❌ **Usage:**\n"
-            "`/remove_premium <user_id>`"
-        )
-
-    try:
-        user_id = int(
-            message.command[1]
-        )
-    except ValueError:
-        return await message.reply_text(
-            "❌ Invalid user ID."
-        )
-
-    await db.set_premium(
-        user_id,
-        False,
-    )
-
-    await message.reply_text(
-        f"🆓 User `{user_id}` "
-        "returned to Free Tier."
-    )
-
-
-# ============================================================
-# BAN
-# ============================================================
-
-@Client.on_message(
-    filters.private
-    & filters.command("ban")
-    & filters.user(Config.ADMIN)
-)
-async def ban_handler(
-    client: Client,
-    message: Message,
-):
-    if not main_bot_only(client):
-        return
-
-    if len(message.command) < 2:
-        return await message.reply_text(
-            "❌ **Usage:**\n"
-            "`/ban <user_id>`"
-        )
-
-    try:
-        user_id = int(
-            message.command[1]
-        )
-    except ValueError:
-        return await message.reply_text(
-            "❌ Invalid user ID."
-        )
-
-    await db.ban_user(
-        user_id
-    )
-
-    await message.reply_text(
-        f"🚫 User `{user_id}` **banned**."
-    )
-
-
-# ============================================================
-# UNBAN
-# ============================================================
-
-@Client.on_message(
-    filters.private
-    & filters.command("unban")
-    & filters.user(Config.ADMIN)
-)
-async def unban_handler(
-    client: Client,
-    message: Message,
-):
-    if not main_bot_only(client):
-        return
-
-    if len(message.command) < 2:
-        return await message.reply_text(
-            "❌ **Usage:**\n"
-            "`/unban <user_id>`"
-        )
-
-    try:
-        user_id = int(
-            message.command[1]
-        )
-    except ValueError:
-        return await message.reply_text(
-            "❌ Invalid user ID."
-        )
-
-    await db.unban_user(
-        user_id
-    )
-
-    await message.reply_text(
-        f"✅ User `{user_id}` **unbanned**."
-    )
-
-
-# ============================================================
-# RESTART MAIN BOT
-# ============================================================
-
-@Client.on_message(
-    filters.private
-    & filters.command("restart")
-    & filters.user(Config.ADMIN)
-)
-async def restart_bot(
-    client: Client,
-    message: Message,
-):
-    if not main_bot_only(client):
-        return
-
-    await message.reply_text(
-        "🔄 **AniToon_1Bot is restarting...**"
-    )
-
-    await asyncio.sleep(1)
-
-    os.execl(
-        sys.executable,
-        sys.executable,
-        *sys.argv,
+    await query.message.edit_text(
+        "🧩 **How to Join Split Parts**\n\n"
+        "1️⃣ Download **ALL parts**.\n"
+        "2️⃣ Keep them in the same folder.\n"
+        "3️⃣ Keep their original numbering.\n\n"
+        "🐧 **Linux / macOS:**\n"
+        "`cat filename.part* > output_file`\n\n"
+        "⚠️ The generated parts are raw binary parts, "
+        "not a ZIP/RAR archive.",
+        reply_markup=InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        "⬅️ Back",
+                        callback_data="help",
+                    )
+                ]
+            ]
+        ),
     )
