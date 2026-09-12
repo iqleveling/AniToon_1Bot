@@ -10,22 +10,23 @@ from helper.database import db
 from helper.utils import humanbytes
 
 
-# --- MAIN CALLBACK HANDLER ---
+# ============================================================
+# CALLBACK HANDLER
+# ============================================================
+
 @Client.on_callback_query()
 async def cb_handler(
     client: Client,
     query: CallbackQuery,
 ):
-    """
-    Handles all interactive menu buttons.
-    """
-
     data = query.data
     user_id = query.from_user.id
 
-    # --- HOME MENU ---
-    if data == "start":
+    # --------------------------------------------------------
+    # HOME
+    # --------------------------------------------------------
 
+    if data == "start":
         user_data = await db.get_user_data(user_id)
 
         if not user_data:
@@ -33,7 +34,6 @@ async def cb_handler(
             user_data = await db.get_user_data(user_id)
 
         used = await db.get_usage(user_id)
-
         is_premium = user_data.get(
             "is_premium",
             False,
@@ -85,9 +85,11 @@ async def cb_handler(
             reply_markup=keyboard,
         )
 
-    # --- ABOUT MENU ---
-    elif data == "about":
+    # --------------------------------------------------------
+    # ABOUT
+    # --------------------------------------------------------
 
+    elif data == "about":
         keyboard = InlineKeyboardMarkup(
             [
                 [
@@ -111,11 +113,19 @@ async def cb_handler(
             reply_markup=keyboard,
         )
 
-    # --- HELP MENU ---
-    elif data == "help":
+    # --------------------------------------------------------
+    # HELP
+    # --------------------------------------------------------
 
+    elif data == "help":
         keyboard = InlineKeyboardMarkup(
             [
+                [
+                    InlineKeyboardButton(
+                        "🧩 How to Join Parts",
+                        callback_data="how_to_join",
+                    )
+                ],
                 [
                     InlineKeyboardButton(
                         "⚙️ Settings",
@@ -139,17 +149,69 @@ async def cb_handler(
             "4️⃣ FFmpeg processes the media metadata.\n"
             "5️⃣ The renamed file is uploaded back to you.\n\n"
             "🖼️ **Thumbnail:**\n"
-            "Use the thumbnail commands to save a permanent thumbnail.\n\n"
+            "Send an image to save it as your permanent thumbnail.\n\n"
             "📝 **Caption:**\n"
             "Use `/set_caption` to save a custom caption.\n\n"
-            "💎 **Premium:**\n"
-            "Premium accounts can use the higher file-processing limits.",
+            "🏷️ **Metadata:**\n"
+            "Customize internal audio and subtitle track names.\n\n"
+            "✂️ **Large Files:**\n"
+            "Files above the split limit can be uploaded in multiple parts.",
             reply_markup=keyboard,
         )
 
-    # --- PREMIUM MENU ---
-    elif data == "upgrade":
+    # --------------------------------------------------------
+    # HOW TO JOIN PARTS
+    # --------------------------------------------------------
 
+    elif data == "how_to_join":
+        keyboard = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        "⬅️ Back to Help",
+                        callback_data="help",
+                    )
+                ]
+            ]
+        )
+
+        tutorial_text = (
+            "🧩 **How to Join Split Parts**\n\n"
+            "Large files may be divided into multiple parts such as:\n\n"
+            "`filename.part001`\n"
+            "`filename.part002`\n"
+            "`filename.part003`\n\n"
+            "📥 **Step 1 — Download ALL Parts**\n"
+            "Download every part before joining them.\n"
+            "Keep all parts inside the **same folder**.\n\n"
+            "🪟 **Windows**\n"
+            "Use 7-Zip or WinRAR and open the first part:\n"
+            "`filename.part001`\n\n"
+            "Choose the extract option and the software will "
+            "process the numbered parts in order.\n\n"
+            "📱 **Android**\n"
+            "Use a file archive application that supports "
+            "multi-part archives/files. Select the first part "
+            "and follow the application's extraction instructions.\n\n"
+            "🐧 **Linux / macOS**\n"
+            "For raw binary parts, you can join them with:\n\n"
+            "`cat filename.part* > output_file`\n\n"
+            "⚠️ **Important**\n"
+            "Do not rename the individual parts before joining them.\n"
+            "Make sure every part is completely downloaded and "
+            "that the numbering is correct."
+        )
+
+        await query.message.edit_text(
+            tutorial_text,
+            reply_markup=keyboard,
+        )
+
+    # --------------------------------------------------------
+    # PREMIUM / UPGRADE
+    # --------------------------------------------------------
+
+    elif data == "upgrade":
         keyboard = InlineKeyboardMarkup(
             [
                 [
@@ -178,9 +240,11 @@ async def cb_handler(
             reply_markup=keyboard,
         )
 
-    # --- SETTINGS MENU ---
-    elif data == "settings":
+    # --------------------------------------------------------
+    # SETTINGS
+    # --------------------------------------------------------
 
+    elif data == "settings":
         thumb = await db.get_thumbnail(user_id)
         caption = await db.get_caption(user_id)
 
@@ -198,6 +262,12 @@ async def cb_handler(
                 ],
                 [
                     InlineKeyboardButton(
+                        "🏷️ Metadata",
+                        callback_data="metadata_settings",
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
                         "⬅️ Back",
                         callback_data="start",
                     )
@@ -210,16 +280,17 @@ async def cb_handler(
             f"🖼️ **Thumbnail:** "
             f"{'✅ Saved' if thumb else '❌ Not Set'}\n"
             f"📝 **Caption:** "
-            f"{'✅ Saved' if caption else '❌ Not Set'}\n"
-            f"🏷️ **Audio Track Name:** "
-            f"`{Config.AUDIO_NAME}`\n"
-            f"💬 **Subtitle Track Name:** "
-            f"`{Config.SUBTITLE_NAME}`",
+            f"{'✅ Saved' if caption else '❌ Not Set'}\n\n"
+            "Choose a setting below:",
             reply_markup=keyboard,
         )
 
-    # --- THUMBNAIL SETTINGS ---
+    # --------------------------------------------------------
+    # THUMBNAIL SETTINGS
+    # --------------------------------------------------------
+
     elif data == "thumb_settings":
+        thumb = await db.get_thumbnail(user_id)
 
         keyboard = InlineKeyboardMarkup(
             [
@@ -238,19 +309,19 @@ async def cb_handler(
             ]
         )
 
-        thumb = await db.get_thumbnail(user_id)
-
         await query.message.edit_text(
             "🖼️ **Thumbnail Settings**\n\n"
-            f"Current Status: "
-            f"{'✅ Thumbnail Saved' if thumb else '❌ No Thumbnail Saved'}\n\n"
-            "Send an image to update your permanent thumbnail.",
+            f"**Status:** "
+            f"{'✅ Saved' if thumb else '❌ Not Set'}\n\n"
+            "Send an image to set or replace your permanent thumbnail.",
             reply_markup=keyboard,
         )
 
-    # --- CAPTION SETTINGS ---
-    elif data == "caption_settings":
+    # --------------------------------------------------------
+    # CAPTION SETTINGS
+    # --------------------------------------------------------
 
+    elif data == "caption_settings":
         caption = await db.get_caption(user_id)
 
         keyboard = InlineKeyboardMarkup(
@@ -276,44 +347,113 @@ async def cb_handler(
             ]
         )
 
+        current_caption = (
+            f"`{caption}`"
+            if caption
+            else "❌ Not Set"
+        )
+
         await query.message.edit_text(
             "📝 **Caption Settings**\n\n"
-            f"**Status:** "
-            f"{'✅ Saved' if caption else '❌ Not Set'}\n\n"
-            f"{'Current Template:' if caption else 'Use `/set_caption` to create one.'}\n"
-            f"{'`' + caption + '`' if caption else ''}",
+            f"**Current Caption:**\n{current_caption}\n\n"
+            "Use `/set_caption` to create or change your caption.",
             reply_markup=keyboard,
         )
 
-    # --- DELETE THUMBNAIL ---
-    elif data == "del_thumb":
+    # --------------------------------------------------------
+    # DELETE THUMBNAIL
+    # --------------------------------------------------------
 
+    elif data == "del_thumb":
         await db.set_thumbnail(
             user_id,
             None,
         )
 
-        await query.answer(
-            "Thumbnail Deleted 🗑️",
-            show_alert=True,
-        )
-
         await query.message.edit_text(
             "🗑️ **Permanent Thumbnail Deleted.**\n\n"
-            "Send a new image to set another thumbnail.",
+            "Send a new image whenever you want to set another thumbnail.",
             reply_markup=InlineKeyboardMarkup(
                 [
                     [
                         InlineKeyboardButton(
                             "⬅️ Back",
-                            callback_data="settings",
+                            callback_data="thumb_settings",
                         )
                     ]
                 ]
             ),
         )
 
-    # --- UNKNOWN CALLBACK ---
+    # --------------------------------------------------------
+    # METADATA SETTINGS
+    # --------------------------------------------------------
+
+    elif data == "metadata_settings":
+        await query.answer(
+            "Use /metadata to manage track names.",
+            show_alert=True,
+        )
+        return
+
+    # --------------------------------------------------------
+    # CAPTION HELP
+    # --------------------------------------------------------
+
+    elif data == "help_caption":
+        keyboard = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        "⬅️ Back",
+                        callback_data="caption_settings",
+                    )
+                ]
+            ]
+        )
+
+        await query.message.edit_text(
+            "📝 **Caption Help**\n\n"
+            "You can use these placeholders:\n\n"
+            "• `{filename}` — File name\n"
+            "• `{filesize}` — File size\n"
+            "• `{duration}` — Video duration\n\n"
+            "**Example:**\n"
+            "`🎬 {filename}`\n"
+            "`📦 {filesize}`\n"
+            "`⏱️ {duration}`",
+            reply_markup=keyboard,
+        )
+
+    # --------------------------------------------------------
+    # DELETE CAPTION
+    # --------------------------------------------------------
+
+    elif data == "del_caption":
+        await db.set_caption(
+            user_id,
+            None,
+        )
+
+        await query.message.edit_text(
+            "🗑️ **Custom Caption Deleted.**\n\n"
+            "Your files will now use the default caption.",
+            reply_markup=InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton(
+                            "⬅️ Back",
+                            callback_data="caption_settings",
+                        )
+                    ]
+                ]
+            ),
+        )
+
+    # --------------------------------------------------------
+    # UNKNOWN CALLBACK
+    # --------------------------------------------------------
+
     else:
         await query.answer(
             "This option is not available.",
@@ -321,5 +461,4 @@ async def cb_handler(
         )
         return
 
-    # Stop Telegram's loading animation.
     await query.answer()
