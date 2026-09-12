@@ -1,5 +1,3 @@
-import asyncio
-
 from pyrogram import Client, filters
 from pyrogram.types import (
     Message,
@@ -13,87 +11,95 @@ from helper.database import db
 from helper.utils import humanbytes
 
 
-# --- USER PLAN & QUOTA STATUS ---
+# ============================================================
+# USER PLAN
+# ============================================================
 
 @Client.on_message(
     filters.private
-    & filters.command(["myplan", "plan", "status"])
+    & filters.command(
+        ["myplan", "plan", "status"]
+    )
 )
 async def user_plan_status(
     client: Client,
     message: Message,
 ):
-    """
-    Displays the user's current plan and daily usage.
-    """
-
     user_id = message.from_user.id
 
-    # Make sure the user exists.
-    if not await db.is_user_exist(user_id):
-        await db.add_user(user_id)
+    if not await db.is_user_exist(
+        user_id
+    ):
+        await db.add_user(
+            user_id
+        )
 
-    user_data = await db.get_user_data(user_id)
+    user_data = await db.get_user_data(
+        user_id
+    )
 
     if not user_data:
         return await message.reply_text(
-            "❌ **Unable to load your account data.**"
+            "❌ Unable to load your account."
         )
 
-    used = await db.get_usage(user_id)
-    limit = Config.DAILY_LIMIT
+    used = await db.get_usage(
+        user_id
+    )
+
     is_premium = user_data.get(
         "is_premium",
         False,
     )
 
     if is_premium:
-        remaining_text = "♾️ Unlimited"
-        file_limit_text = "✅ Enabled"
+        remaining = "♾️ Unlimited"
+        tier = "PROMAX PREMIUM"
     else:
-        remaining = max(limit - used, 0)
-        remaining_text = humanbytes(remaining)
-        file_limit_text = "🆓 Free Limit"
+        remaining = humanbytes(
+            max(
+                Config.DAILY_LIMIT - used,
+                0,
+            )
+        )
+        tier = "FREE TIER"
 
-    status_text = (
-        "📊 **AniToon Promax Subscription**\n\n"
-        f"👤 **User:** `{message.from_user.first_name}`\n"
+    text = (
+        "📊 **AniToon Subscription**\n\n"
+        f"👤 **User:** "
+        f"`{message.from_user.first_name}`\n"
         f"🆔 **ID:** `{user_id}`\n\n"
-        f"💎 **Current Tier:** "
-        f"{'PROMAX PREMIUM' if is_premium else 'FREE TIER'}\n"
-        f"📦 **File Access:** {file_limit_text}\n\n"
-        f"📈 **Used Today:** `{humanbytes(used)}`\n"
-        f"⏳ **Remaining Today:** `{remaining_text}`"
+        f"💎 **Tier:** `{tier}`\n"
+        f"📈 **Used Today:** "
+        f"`{humanbytes(used)}`\n"
+        f"⏳ **Remaining:** "
+        f"`{remaining}`"
     )
 
-    if is_premium:
-        status_text += (
-            "\n\n✨ **Premium Status Active!**"
-        )
+    keyboard = None
 
-        await message.reply_text(
-            status_text
-        )
-
-    else:
+    if not is_premium:
         keyboard = InlineKeyboardMarkup(
             [
                 [
                     InlineKeyboardButton(
-                        "💎 Upgrade to Premium",
+                        "💎 Upgrade",
                         callback_data="upgrade",
                     )
                 ]
             ]
         )
 
-        await message.reply_text(
-            status_text,
-            reply_markup=keyboard,
-        )
+    await message.reply_text(
+        text,
+        reply_markup=keyboard,
+    )
 
 
-# --- CLONE ENGINE ---
+# ============================================================
+# CLONE BUTTON / COMMAND
+# MAIN BOT ONLY
+# ============================================================
 
 @Client.on_message(
     filters.private
@@ -103,70 +109,60 @@ async def initiate_clone(
     client: Client,
     message: Message,
 ):
-    """
-    Starts the personal bot cloning process.
-    """
-
-    user_id = message.from_user.id
+    if not getattr(
+        client,
+        "is_main_bot",
+        False,
+    ):
+        return await message.reply_text(
+            "❌ Clone creation is available "
+            "only from the main AniToon bot."
+        )
 
     if not Config.IS_CLONE_ALLOWED:
         return await message.reply_text(
-            "❌ **Clone Engine Disabled**\n\n"
-            "The owner has currently disabled "
-            "the cloning feature."
+            "❌ **Clone Engine Disabled**"
         )
 
-    # Make sure user exists.
-    if not await db.is_user_exist(user_id):
-        await db.add_user(user_id)
+    user_id = message.from_user.id
 
-    user_data = await db.get_user_data(user_id)
-
-    if not user_data:
-        return await message.reply_text(
-            "❌ Unable to load your account."
-        )
-
-    # Premium-only feature.
-    if not user_data.get(
-        "is_premium",
-        False,
+    if not await db.is_user_exist(
+        user_id
     ):
-        keyboard = InlineKeyboardMarkup(
-            [
-                [
-                    InlineKeyboardButton(
-                        "💎 Buy Premium",
-                        callback_data="upgrade",
-                    )
-                ]
-            ]
+        await db.add_user(
+            user_id
         )
 
-        return await message.reply_text(
-            "💎 **Premium Feature**\n\n"
-            "The Clone Engine lets you create "
-            "your own AniToon-style bot instance.\n\n"
-            "Please upgrade to Premium to use "
-            "this feature.",
-            reply_markup=keyboard,
-        )
+    keyboard = InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "❌ Cancel",
+                    callback_data="start",
+                )
+            ]
+        ]
+    )
 
     await message.reply_text(
-        "🤖 **AniToon Clone Engine**\n\n"
-        "To connect your own Telegram bot:\n\n"
-        "1️⃣ Create a bot using @BotFather.\n"
-        "2️⃣ Copy the bot token.\n"
-        "3️⃣ Reply to this message with the token.\n\n"
-        "⚠️ **Security:** Never post your bot token "
-        "in public chats.",
+        "🤖 **Create Your AniToon Clone**\n\n"
+        "1️⃣ Open **@BotFather**.\n"
+        "2️⃣ Create a new Telegram bot.\n"
+        "3️⃣ Copy the Bot Token.\n"
+        "4️⃣ Reply to this message with the token.\n\n"
+        "Your clone will run as a normal Telegram bot "
+        "and use the AniToon features.\n\n"
+        "⚠️ Keep your bot token private.",
         reply_markup=ForceReply(
             selective=True
         ),
     )
 
 
-# --- PROCESS CLONE TOKEN ---
+# ============================================================
+# PROCESS BOT TOKEN
+# MAIN BOT ONLY
+# ============================================================
 
 @Client.on_message(
     filters.private
@@ -177,40 +173,50 @@ async def process_clone_token(
     client: Client,
     message: Message,
 ):
-    """
-    Receives and validates a token entered
-    in response to the Clone Engine prompt.
-    """
+    if not getattr(
+        client,
+        "is_main_bot",
+        False,
+    ):
+        return
 
     reply = message.reply_to_message
 
-    if not reply or not reply.text:
+    if not reply:
         return
 
-    if "AniToon Clone Engine" not in reply.text:
+    if not reply.text:
         return
 
-    user_id = message.from_user.id
+    if (
+        "Create Your AniToon Clone"
+        not in reply.text
+    ):
+        return
+
     token = message.text.strip()
+    owner_id = message.from_user.id
 
-    # Basic token format validation.
     if (
         ":" not in token
         or len(token) < 20
     ):
         return await message.reply_text(
-            "❌ **Invalid Bot Token Format!**\n\n"
-            "Please enter the token generated by @BotFather."
+            "❌ **Invalid Bot Token**\n\n"
+            "Please send the token generated "
+            "by @BotFather."
         )
 
     status = await message.reply_text(
-        "🔄 **Checking your bot token...**"
+        "🔄 **Verifying your bot token...**"
     )
 
     try:
-        # Verify the token before saving it.
         test_client = Client(
-            name=f"clone_check_{user_id}",
+            name=(
+                f"verify_"
+                f"{owner_id}"
+            ),
             api_id=Config.API_ID,
             api_hash=Config.API_HASH,
             bot_token=token,
@@ -219,22 +225,57 @@ async def process_clone_token(
 
         await test_client.start()
 
-        bot_info = await test_client.get_me()
+        bot_info = (
+            await test_client.get_me()
+        )
 
         await test_client.stop()
 
-        # Store token only after successful verification.
-        await db.add_clone(
-            user_id,
-            token,
+        # --------------------------------------------------------
+        # CHECK EXISTING CLONE
+        # --------------------------------------------------------
+
+        existing = (
+            await db.get_clone_by_bot_id(
+                bot_info.id
+            )
         )
 
+        if existing:
+            return await status.edit_text(
+                "⚠️ **This bot is already connected.**"
+            )
+
+        # --------------------------------------------------------
+        # START REAL CLONE
+        # --------------------------------------------------------
+
+        if not client.clone_manager:
+            return await status.edit_text(
+                "❌ **Clone Manager is unavailable.**"
+            )
+
+        clone = (
+            await client.clone_manager.add_clone(
+                owner_id,
+                token,
+            )
+        )
+
+        if not clone:
+            return await status.edit_text(
+                "❌ **Clone could not be started.**"
+            )
+
         await status.edit_text(
-            "✅ **Bot Token Verified!**\n\n"
-            f"🤖 **Bot:** @{bot_info.username}\n"
-            f"🆔 **Bot ID:** `{bot_info.id}`\n\n"
-            "The clone information has been saved "
-            "successfully."
+            "✅ **Clone Created Successfully!**\n\n"
+            f"🤖 **Bot:** "
+            f"@{bot_info.username}\n"
+            f"🆔 **Bot ID:** "
+            f"`{bot_info.id}`\n\n"
+            "🟢 **Status:** Online\n\n"
+            "Your clone now runs as an "
+            "AniToon-style bot."
         )
 
     except Exception as e:
@@ -244,48 +285,6 @@ async def process_clone_token(
             pass
 
         await status.edit_text(
-            "❌ **Cloning Failed**\n\n"
-            f"`{str(e)[:1000]}`"
-        )
-
-
-# --- ADMIN: PREMIUM SESSION CHECK ---
-
-@Client.on_message(
-    filters.private
-    & filters.command("check_premium")
-    & filters.user(Config.ADMIN)
-)
-async def verify_premium_session(
-    client: Client,
-    message: Message,
-):
-    """
-    Checks whether the configured user session
-    is currently connected.
-    """
-
-    if not hasattr(client, "USER"):
-        return await message.reply_text(
-            "❌ **Premium Session Not Found**\n\n"
-            "Add `STRING_SESSION` to your environment "
-            "variables and restart the bot."
-        )
-
-    try:
-        me = await client.USER.get_me()
-
-        await message.reply_text(
-            "💎 **Premium Session Status**\n\n"
-            f"👤 **Account:** `{me.first_name}`\n"
-            f"🆔 **ID:** `{me.id}`\n"
-            f"🔗 **Username:** "
-            f"`@{me.username}`\n\n"
-            "🟢 **Session:** Active"
-        )
-
-    except Exception as e:
-        await message.reply_text(
-            "❌ **Premium Session Error**\n\n"
+            "❌ **Clone Creation Failed**\n\n"
             f"`{str(e)[:1000]}`"
         )
