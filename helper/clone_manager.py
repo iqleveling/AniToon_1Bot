@@ -1,7 +1,4 @@
-import asyncio
-
 from pyrogram import Client
-from pyrogram.errors import RPCError
 
 from config import Config
 from helper.database import db
@@ -12,13 +9,12 @@ class CloneManager:
         self,
         main_client,
     ):
-        self.main_client = main_client
+        self.main_client = (
+            main_client
+        )
+
         self.clones = {}
 
-
-    # ============================================================
-    # START ONE CLONE
-    # ============================================================
 
     async def start_clone(
         self,
@@ -26,11 +22,15 @@ class CloneManager:
     ):
         try:
             client = Client(
-                name=f"clone_{bot_token.split(':')[0]}",
+                name=(
+                    f"clone_"
+                    f"{bot_token.split(':')[0]}"
+                ),
                 api_id=Config.API_ID,
                 api_hash=Config.API_HASH,
                 bot_token=bot_token,
                 in_memory=True,
+                workers=100,
                 plugins={
                     "root": "plugins"
                 },
@@ -43,7 +43,11 @@ class CloneManager:
 
             me = await client.get_me()
 
-            self.clones[me.id] = client
+            client.bot_id = me.id
+
+            self.clones[
+                me.id
+            ] = client
 
             await db.set_clone_status(
                 me.id,
@@ -64,30 +68,6 @@ class CloneManager:
 
             return None
 
-
-    # ============================================================
-    # START ALL SAVED CLONES
-    # ============================================================
-
-    async def start_all(self):
-        async for clone in (
-            await db.get_all_clones()
-        ):
-            token = clone.get(
-                "bot_token"
-            )
-
-            if not token:
-                continue
-
-            await self.start_clone(
-                token
-            )
-
-
-    # ============================================================
-    # ADD NEW CLONE
-    # ============================================================
 
     async def add_clone(
         self,
@@ -114,9 +94,21 @@ class CloneManager:
         return client
 
 
-    # ============================================================
-    # STOP ALL CLONES
-    # ============================================================
+    async def start_all(self):
+        cursor = db.get_all_clones()
+
+        async for clone in cursor:
+            token = clone.get(
+                "bot_token"
+            )
+
+            if not token:
+                continue
+
+            await self.start_clone(
+                token
+            )
+
 
     async def stop_all(self):
         for bot_id, client in list(
