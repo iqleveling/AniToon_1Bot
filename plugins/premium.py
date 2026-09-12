@@ -3,8 +3,14 @@ from pyrogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
     ForceReply,
+    LabeledPrice,
 )
-from pyrogram.raw.types import LabeledPrice
+from pyrogram.raw.types import (
+    UpdateBotPrecheckoutQuery,
+)
+from pyrogram.raw.functions.messages import (
+    SetBotPrecheckoutResults,
+)
 
 from config import Config
 from helper.database import db
@@ -93,7 +99,7 @@ async def send_plan_menu(
         "when required."
     )
 
-    return await client.send_message(
+    await client.send_message(
         chat_id=chat_id,
         text=text,
         reply_markup=InlineKeyboardMarkup(
@@ -158,12 +164,13 @@ async def user_plan_status(
         "expires_at"
     )
 
-    if expires_at:
-        expiry_text = expires_at.strftime(
+    expiry_text = (
+        expires_at.strftime(
             "%d %b %Y, %H:%M"
         )
-    else:
-        expiry_text = "No expiry"
+        if expires_at
+        else "No expiry"
+    )
 
     text = (
         "📊 **AniToon Plan Status**\n\n"
@@ -171,13 +178,14 @@ async def user_plan_status(
         f"`{message.from_user.first_name}`\n"
         f"🆔 **ID:** `{user_id}`\n\n"
         f"💎 **Plan:** {plan.name}\n"
-        f"⭐ **Plan Price:** "
+        f"⭐ **Price:** "
         f"`{plan.stars} Stars`\n"
         f"📈 **Used Today:** "
         f"`{humanbytes(used)}`\n"
         f"⏳ **Remaining:** "
         f"`{humanbytes(remaining)}`\n"
-        f"📅 **Expires:** `{expiry_text}`"
+        f"📅 **Expires:** "
+        f"`{expiry_text}`"
     )
 
     if is_main_bot(client):
@@ -191,24 +199,23 @@ async def user_plan_status(
                 ]
             ]
         )
-    else:
-        if Config.MAIN_BOT_USERNAME:
-            keyboard = InlineKeyboardMarkup(
+    elif Config.MAIN_BOT_USERNAME:
+        keyboard = InlineKeyboardMarkup(
+            [
                 [
-                    [
-                        InlineKeyboardButton(
-                            "💎 Buy / Upgrade",
-                            url=(
-                                "https://t.me/"
-                                f"{Config.MAIN_BOT_USERNAME}"
-                                f"?start=plans_{bot_id}"
-                            ),
-                        )
-                    ]
+                    InlineKeyboardButton(
+                        "💎 Buy / Upgrade",
+                        url=(
+                            "https://t.me/"
+                            f"{Config.MAIN_BOT_USERNAME}"
+                            f"?start=plans_{bot_id}"
+                        ),
+                    )
                 ]
-            )
-        else:
-            keyboard = None
+            ]
+        )
+    else:
+        keyboard = None
 
     await message.reply_text(
         text,
@@ -241,7 +248,7 @@ async def upgrade_button(
             "💎 **AniToon Premium**\n\n"
             "Premium purchases are handled by "
             "**AniToon_1Bot**.\n\n"
-            "Tap the button below to continue.",
+            "Tap below to continue.",
             reply_markup=InlineKeyboardMarkup(
                 [
                     [
@@ -344,66 +351,105 @@ async def buy_plan(
 
 
 # ============================================================
-# PRE-CHECKOUT
+# PRE-CHECKOUT RAW UPDATE
 # ============================================================
 
-@Client.on_pre_checkout_query()
+@Client.on_raw_update()
 async def pre_checkout_handler(
     client,
-    query,
+    update,
+    users,
+    chats,
 ):
     if not is_main_bot(client):
         return
 
+    if not isinstance(
+        update,
+        UpdateBotPrecheckoutQuery,
+    ):
+        return
+
     try:
-        payload = query.invoice_payload
+        payload = update.payload.decode(
+            "utf-8"
+        )
+
         parts = payload.split("|")
 
         if len(parts) != 3:
-            return await client.answer_pre_checkout_query(
-                query.id,
-                ok=False,
-                error_message="Invalid payment information.",
+            await client.invoke(
+                SetBotPrecheckoutResults(
+                    query_id=update.query_id,
+                    success=False,
+                    error=(
+                        "Invalid payment information."
+                    ),
+                )
             )
+            return
 
         prefix = parts[0]
         plan_key = parts[1]
 
         if prefix != "anitoon":
-            return await client.answer_pre_checkout_query(
-                query.id,
-                ok=False,
-                error_message="Invalid payment.",
+            await client.invoke(
+                SetBotPrecheckoutResults(
+                    query_id=update.query_id,
+                    success=False,
+                    error="Invalid payment.",
+                )
             )
+            return
 
         if plan_key not in PLANS:
-            return await client.answer_pre_checkout_query(
-                query.id,
-                ok=False,
-                error_message="Invalid plan.",
+            await client.invoke(
+                SetBotPrecheckoutResults(
+                    query_id=update.query_id,
+                    success=False,
+                    error="Invalid plan.",
+                )
             )
+            return
 
         plan = get_plan(
             plan_key
         )
 
-        if query.currency != "XTR":
-            return await client.answer_pre_checkout_query(
-                query.id,
-                ok=False,
-                error_message="Invalid payment currency.",
-            )
+        currency = update.currency
 
-        if query.total_amount != plan.stars:
-            return await client.answer_pre_checkout_query(
-                query.id,
-                ok=False,
-                error_message="Invalid payment amount.",
+        if currency != "XTR":
+            await client.invoke(
+                SetBotPrecheckoutResults(
+                    query_id=update.query_id,
+                    success=False,
+                    error=(
+                        "Invalid payment currency."
+                    ),
+                )
             )
+            return
 
-        await client.answer_pre_checkout_query(
-            query.id,
-            ok=True,
+        if (
+            update.total_amount
+            != plan.stars
+        ):
+            await client.invoke(
+                SetBotPrecheckoutResults(
+                    query_id=update.query_id,
+                    success=False,
+                    error=(
+                        "Invalid payment amount."
+                    ),
+                )
+            )
+            return
+
+        await client.invoke(
+            SetBotPrecheckoutResults(
+                query_id=update.query_id,
+                success=True,
+            )
         )
 
     except Exception as e:
@@ -412,10 +458,14 @@ async def pre_checkout_handler(
         )
 
         try:
-            await client.answer_pre_checkout_query(
-                query.id,
-                ok=False,
-                error_message="Payment validation failed.",
+            await client.invoke(
+                SetBotPrecheckoutResults(
+                    query_id=update.query_id,
+                    success=False,
+                    error=(
+                        "Payment validation failed."
+                    ),
+                )
             )
         except Exception:
             pass
@@ -436,7 +486,9 @@ async def successful_payment(
     if not is_main_bot(client):
         return
 
-    payment = message.successful_payment
+    payment = (
+        message.successful_payment
+    )
 
     if not payment:
         return
@@ -455,6 +507,7 @@ async def successful_payment(
 
         prefix = parts[0]
         plan_key = parts[1]
+
         target_bot_id = int(
             parts[2]
         )
@@ -518,16 +571,19 @@ async def successful_payment(
             )
         )
 
-        expires_at = subscription.get(
-            "expires_at"
+        expires_at = (
+            subscription.get(
+                "expires_at"
+            )
         )
 
-        if expires_at:
-            expiry_text = expires_at.strftime(
+        expiry_text = (
+            expires_at.strftime(
                 "%d %b %Y, %H:%M"
             )
-        else:
-            expiry_text = "No expiry"
+            if expires_at
+            else "No expiry"
+        )
 
         await message.reply_text(
             "✅ **Payment Successful!**\n\n"
@@ -546,8 +602,7 @@ async def successful_payment(
         )
 
         await message.reply_text(
-            "⚠️ **Payment received, "
-            "but activation failed.**\n\n"
+            "⚠️ **Payment received, but activation failed.**\n\n"
             "Please use `/paysupport`."
         )
 
@@ -568,9 +623,7 @@ async def payment_support(
         "💳 **Payment Support**\n\n"
         "For Stars payment or Premium "
         "activation problems, contact "
-        "@AniToon_Official.\n\n"
-        "Please keep your Telegram payment "
-        "information available."
+        "@AniToon_Official."
     )
 
 
@@ -613,9 +666,9 @@ async def initiate_clone(
         "3️⃣ Copy the Bot Token.\n"
         "4️⃣ Reply to this message with the token.\n\n"
         "Your clone will have the normal "
-        "AniToon user features.\n\n"
+        "AniToon features.\n\n"
         "⚠️ Never share your BotFather token "
-        "in a public chat.",
+        "publicly.",
         reply_markup=ForceReply(
             selective=True
         ),
@@ -623,7 +676,7 @@ async def initiate_clone(
 
 
 # ============================================================
-# CLONE TOKEN PROCESSING
+# PROCESS CLONE TOKEN
 # ============================================================
 
 @Client.on_message(
@@ -656,9 +709,7 @@ async def process_clone_token(
         or len(token) < 20
     ):
         return await message.reply_text(
-            "❌ **Invalid Bot Token.**\n\n"
-            "Please send the token generated "
-            "by @BotFather."
+            "❌ **Invalid Bot Token.**"
         )
 
     status = await message.reply_text(
@@ -724,10 +775,10 @@ async def process_clone_token(
             f"`{bot_info.id}`\n\n"
             "🟢 **Status:** Online\n\n"
             "✅ Normal AniToon features are enabled.\n"
-            "❌ Owner dashboard is not available "
-            "inside this clone.\n\n"
-            "💎 Premium payments from this clone "
-            "are handled through AniToon_1Bot."
+            "❌ Owner dashboard is only available "
+            "on the main AniToon bot.\n\n"
+            "⭐ Premium payments are handled "
+            "through AniToon_1Bot."
         )
 
     except Exception as e:
