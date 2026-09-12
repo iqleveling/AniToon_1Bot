@@ -3,15 +3,32 @@ import asyncio
 import logging
 import json
 
-from config import Config
+
+DEFAULT_METADATA_NAME = "AniToon Official"
 
 
-# --- Choice 3-B: INTERNAL METADATA BRANDING ---
-async def fix_metadata(input_file, output_file):
+async def fix_metadata(
+    input_file,
+    output_file,
+    audio_name=DEFAULT_METADATA_NAME,
+    subtitle_name=DEFAULT_METADATA_NAME,
+):
     """
-    Rewrites the internal title of audio and subtitle streams
-    without re-encoding the media.
+    Rewrite media metadata without re-encoding.
+
+    Audio and subtitle names are passed per-user so the global
+    Config object is not required for this feature.
     """
+
+    audio_name = (
+        str(audio_name).strip()
+        or DEFAULT_METADATA_NAME
+    )
+
+    subtitle_name = (
+        str(subtitle_name).strip()
+        or DEFAULT_METADATA_NAME
+    )
 
     cmd = [
         "ffmpeg",
@@ -23,11 +40,11 @@ async def fix_metadata(input_file, output_file):
         "-c",
         "copy",
         "-metadata",
-        f"title={Config.AUDIO_NAME}",
+        f"title={audio_name}",
         "-metadata:s:a",
-        f"title={Config.AUDIO_NAME}",
+        f"title={audio_name}",
         "-metadata:s:s",
-        f"title={Config.SUBTITLE_NAME}",
+        f"title={subtitle_name}",
         output_file,
     ]
 
@@ -49,10 +66,9 @@ async def fix_metadata(input_file, output_file):
     return False
 
 
-# --- Choice 5-A: STREAMABLE VIDEO ---
 async def make_streamable(input_file, output_file):
     """
-    Moves the MP4/MOV metadata index to the beginning of the file.
+    Moves MP4/MOV metadata to the beginning of the file.
     """
 
     cmd = [
@@ -86,7 +102,6 @@ async def make_streamable(input_file, output_file):
     return input_file
 
 
-# --- PROMAX UTILITY: VIDEO PROBING ---
 async def get_video_info(file_path):
     """
     Returns:
@@ -132,7 +147,11 @@ async def get_video_info(file_path):
 
         return duration, width, height
 
-    except (json.JSONDecodeError, ValueError, TypeError) as e:
+    except (
+        json.JSONDecodeError,
+        ValueError,
+        TypeError,
+    ) as e:
         logging.error(
             "Video Probe Error: %s",
             e,
@@ -140,14 +159,13 @@ async def get_video_info(file_path):
         return 0, 0, 0
 
 
-# --- THUMBNAIL / SCREENSHOT ---
 async def take_screenshot(
     video_file,
     output_file,
     duration,
 ):
     """
-    Generates a preview frame at 10% of the video's duration.
+    Generate a preview frame at 10% of the video's duration.
     """
 
     seek_time = max(float(duration) * 0.1, 0)
@@ -181,4 +199,8 @@ async def take_screenshot(
         )
         return None
 
-    return output_file if os.path.exists(output_file) else None
+    return (
+        output_file
+        if os.path.exists(output_file)
+        else None
+    )
