@@ -22,9 +22,13 @@ from helper.ffmpeg import (
     get_video_info,
     take_screenshot,
 )
+from helper.splitter import split_file
 
 
-# --- AUTOMATIC MEDIA DETECTION ---
+# ============================================================
+# AUTOMATIC MEDIA DETECTION
+# ============================================================
+
 @Client.on_message(
     filters.private
     & (
@@ -35,13 +39,13 @@ from helper.ffmpeg import (
 )
 async def auto_detect(client, message):
     """
-    Detect incoming files and check the user's
-    account status and daily quota.
+    Detects incoming media and asks the user
+    for the new filename.
     """
 
     user_id = message.from_user.id
 
-    # Make sure the user exists in the database.
+    # Create the user if necessary.
     if not await db.is_user_exist(user_id):
         await db.add_user(user_id)
 
@@ -49,25 +53,38 @@ async def auto_detect(client, message):
 
     if not user_data:
         return await message.reply_text(
-            "❌ Unable to load your account data."
+            "❌ **Unable to load your account data.**"
         )
 
-    # --- BAN CHECK ---
+    # --------------------------------------------------------
+    # BAN CHECK
+    # --------------------------------------------------------
+
     if user_data.get("is_banned", False):
         return await message.reply_text(
             "❌ **You are banned from using this bot.**"
         )
 
-    # --- DAILY QUOTA CHECK ---
-    used = await db.get_usage(user_id)
-    is_premium = user_data.get("is_premium", False)
+    # --------------------------------------------------------
+    # DAILY QUOTA CHECK
+    # --------------------------------------------------------
 
-    if not is_premium and used >= Config.DAILY_LIMIT:
+    used = await db.get_usage(user_id)
+    is_premium = user_data.get(
+        "is_premium",
+        False,
+    )
+
+    if (
+        not is_premium
+        and used >= Config.DAILY_LIMIT
+    ):
         return await message.reply_text(
             "🚫 **Daily Limit Reached!**\n\n"
-            f"You have used your free "
-            f"**{humanbytes(Config.DAILY_LIMIT)}** quota today.\n\n"
-            "💎 Upgrade to Premium for higher limits.",
+            f"Your free daily quota of "
+            f"**{humanbytes(Config.DAILY_LIMIT)}** "
+            "has been used.\n\n"
+            "💎 Upgrade to Premium for higher access.",
             reply_markup=InlineKeyboardMarkup(
                 [
                     [
@@ -80,28 +97,35 @@ async def auto_detect(client, message):
             ),
         )
 
-    # --- DETECT MEDIA ---
-    try:
-        media = message.document or message.video or message.audio
+    # --------------------------------------------------------
+    # MEDIA DETECTION
+    # --------------------------------------------------------
 
-        if not media:
-            return
+    media = (
+        message.document
+        or message.video
+        or message.audio
+    )
 
-        filename = getattr(
-            media,
-            "file_name",
-            None,
-        ) or f"file_{message.id}"
+    if not media:
+        return
 
-    except Exception:
-        return await message.reply_text(
-            "❌ Unable to detect the file."
-        )
+    filename = getattr(
+        media,
+        "file_name",
+        None,
+    )
 
-    # --- RENAME PROMPT ---
+    if not filename:
+        filename = f"file_{message.id}"
+
+    # --------------------------------------------------------
+    # RENAME PROMPT
+    # --------------------------------------------------------
+
     await message.reply_text(
-        f"📂 **File Detected**\n\n"
-        f"**Name:** `{filename}`\n\n"
+        "📂 **File Detected**\n\n"
+        f"📄 **Current Name:** `{filename}`\n\n"
         "✏️ Please enter the **new filename**.\n\n"
         "Example:\n"
         "`My Anime Episode 01.mkv`",
@@ -112,7 +136,10 @@ async def auto_detect(client, message):
     )
 
 
-# --- RENAME PROCESS ---
+# ============================================================
+# RENAME PROCESS
+# ============================================================
+
 @Client.on_message(
     filters.private
     & filters.reply
@@ -120,8 +147,8 @@ async def auto_detect(client, message):
 )
 async def process_rename(client, message):
     """
-    Downloads the replied file, applies metadata,
-    then uploads the renamed file.
+    Downloads, processes, renames, optionally splits,
+    uploads and cleans up the file.
     """
 
     reply = message.reply_to_message
@@ -129,7 +156,10 @@ async def process_rename(client, message):
     if not reply:
         return
 
-    # Only process replies to our ForceReply prompt.
+    # --------------------------------------------------------
+    # VERIFY RENAME PROMPT
+    # --------------------------------------------------------
+
     if not reply.reply_markup:
         return
 
@@ -146,17 +176,20 @@ async def process_rename(client, message):
             "❌ **Filename cannot be empty.**"
         )
 
-    # Require a file extension.
     if "." not in new_name:
         return await message.reply_text(
             "❌ **Invalid filename.**\n\n"
-            "Please include a file extension.\n"
-            "Example: `Episode 01.mkv`"
+            "Please include the file extension.\n\n"
+            "Example:\n"
+            "`Episode 01.mkv`"
         )
 
     user_id = message.from_user.id
 
-    # --- GET ORIGINAL MEDIA ---
+    # --------------------------------------------------------
+    # GET ORIGINAL MEDIA
+    # --------------------------------------------------------
+
     media = (
         reply.document
         or reply.video
@@ -165,58 +198,81 @@ async def process_rename(client, message):
 
     if not media:
         return await message.reply_text(
-            "❌ Original media could not be found."
+            "❌ **Original media could not be found.**"
         )
 
     original_name = getattr(
         media,
         "file_name",
         None,
-    ) or f"file_{reply.id}"
+    )
 
-    # --- CHECK USER AGAIN ---
+    if not original_name:
+        original_name = f"file_{reply.id}"
+
+    # --------------------------------------------------------
+    # GET USER DATA
+    # --------------------------------------------------------
+
     user_data = await db.get_user_data(user_id)
 
     if not user_data:
         await db.add_user(user_id)
         user_data = await db.get_user_data(user_id)
 
-    if user_data.get("is_banned", False):
+    if not user_data:
+        return await message.reply_text(
+            "❌ **Unable to load your account.**"
+        )
+
+    if user_data.get(
+        "is_banned",
+        False,
+    ):
         return await message.reply_text(
             "❌ **You are banned from using this bot.**"
         )
 
     used = await db.get_usage(user_id)
+    is_premium = user_data.get(
+        "is_premium",
+        False,
+    )
 
     if (
-        not user_data.get("is_premium", False)
+        not is_premium
         and used >= Config.DAILY_LIMIT
     ):
         return await message.reply_text(
             "🚫 **Daily Limit Reached!**"
         )
 
-    # --- CREATE WORKING DIRECTORY ---
-    timestamp = str(int(time.time() * 1000))
+    # --------------------------------------------------------
+    # WORK DIRECTORY
+    # --------------------------------------------------------
 
-    path = os.path.join(
+    timestamp = str(
+        int(time.time() * 1000)
+    )
+
+    work_dir = os.path.join(
         "downloads",
         str(user_id),
         timestamp,
     )
 
     os.makedirs(
-        path,
+        work_dir,
         exist_ok=True,
     )
 
     download_path = os.path.join(
-        path,
+        work_dir,
         original_name,
     )
 
     output_path = os.path.join(
-        path,
+        work_dir,
         new_name,
     )
 
@@ -225,8 +281,11 @@ async def process_rename(client, message):
     )
 
     try:
-        # --- DOWNLOAD ---
-        start_time = time.time()
+        # ====================================================
+        # STEP 1: DOWNLOAD
+        # ====================================================
+
+        download_start = time.time()
 
         await client.download_media(
             message=reply,
@@ -235,11 +294,13 @@ async def process_rename(client, message):
             progress_args=(
                 "📥 Downloading",
                 status_message,
-                start_time,
+                download_start,
             ),
         )
 
-        if not os.path.exists(download_path):
+        if not os.path.exists(
+            download_path
+        ):
             raise FileNotFoundError(
                 "Downloaded file was not created."
             )
@@ -248,19 +309,29 @@ async def process_rename(client, message):
             download_path
         )
 
-        # Check quota against actual file size.
+        # ----------------------------------------------------
+        # QUOTA CHECK USING ACTUAL FILE SIZE
+        # ----------------------------------------------------
+
         if (
-            not user_data.get("is_premium", False)
-            and used + downloaded_size
-            > Config.DAILY_LIMIT
+            not is_premium
+            and (
+                used + downloaded_size
+                > Config.DAILY_LIMIT
+            )
         ):
             return await status_message.edit_text(
-                "🚫 **Daily Limit Exceeded**\n\n"
-                f"File Size: `{humanbytes(downloaded_size)}`\n"
-                f"Remaining: `{humanbytes(max(Config.DAILY_LIMIT - used, 0))}`"
+                "🚫 **Daily Quota Exceeded**\n\n"
+                f"📦 File Size: "
+                f"`{humanbytes(downloaded_size)}`\n"
+                f"⏳ Remaining: "
+                f"`{humanbytes(max(Config.DAILY_LIMIT - used, 0))}`"
             )
 
-        # --- METADATA ---
+        # ====================================================
+        # STEP 2: METADATA PROCESSING
+        # ====================================================
+
         await status_message.edit_text(
             "🏷️ **AniToon: Processing metadata...**"
         )
@@ -273,25 +344,32 @@ async def process_rename(client, message):
         if metadata_success:
             processing_path = output_path
         else:
-            # Fallback to original file if FFmpeg
-            # could not process the metadata.
             processing_path = download_path
-            output_path = download_path
 
-            # The requested new filename is still used
-            # later during upload.
+            # If FFmpeg could not create the output file,
+            # continue using the downloaded source.
             await status_message.edit_text(
-                "⚠️ **Metadata processing failed.**\n"
-                "Continuing with the renamed file..."
+                "⚠️ **Metadata processing failed.**\n\n"
+                "Continuing with the original media..."
             )
 
-        # --- VIDEO INFORMATION ---
+        # ====================================================
+        # STEP 3: VIDEO INFORMATION
+        # ====================================================
+
         duration = 0
         width = 0
         height = 0
 
-        if media.mime_type and media.mime_type.startswith(
-            "video/"
+        mime_type = getattr(
+            media,
+            "mime_type",
+            None,
+        )
+
+        if (
+            mime_type
+            and mime_type.startswith("video/")
         ):
             (
                 duration,
@@ -301,7 +379,10 @@ async def process_rename(client, message):
                 processing_path
             )
 
-        # --- THUMBNAIL ---
+        # ====================================================
+        # STEP 4: THUMBNAIL
+        # ====================================================
+
         user_thumb = await db.get_thumbnail(
             user_id
         )
@@ -315,7 +396,7 @@ async def process_rename(client, message):
             generated_thumb = await take_screenshot(
                 processing_path,
                 os.path.join(
-                    path,
+                    work_dir,
                     "thumb.jpg",
                 ),
                 duration,
@@ -323,34 +404,29 @@ async def process_rename(client, message):
 
             user_thumb = generated_thumb
 
-        # --- UPLOAD ---
+        # ====================================================
+        # STEP 5: PREPARE UPLOAD
+        # ====================================================
+
         await status_message.edit_text(
-            "📤 **AniToon: Starting upload...**"
+            "📤 **AniToon: Preparing upload...**"
         )
 
-        file_size = os.path.getsize(
+        final_size = os.path.getsize(
             processing_path
         )
 
-        # Use the user client for large uploads
-        # when the premium session is available.
-        upload_client = client
-
-        if (
-            file_size > 2 * 1024 * 1024 * 1024
-            and hasattr(client, "USER")
-            and client.USER
-        ):
-            upload_client = client.USER
+        # ----------------------------------------------------
+        # CAPTION
+        # ----------------------------------------------------
 
         upload_caption = (
-            f"✅ **Renamed by AniToon**\n\n"
+            "✅ **Renamed by AniToon**\n\n"
             f"📂 `{new_name}`\n"
-            f"📦 `{humanbytes(file_size)}`\n\n"
-            f"📥 Uploaded By : @AniToon_Edit"
+            f"📦 `{humanbytes(final_size)}`\n\n"
+            "📥 Uploaded By : @AniToon_Edit"
         )
 
-        # Apply saved user caption when available.
         saved_caption = await db.get_caption(
             user_id
         )
@@ -364,7 +440,7 @@ async def process_rename(client, message):
                 )
                 .replace(
                     "{filesize}",
-                    humanbytes(file_size),
+                    humanbytes(final_size),
                 )
                 .replace(
                     "{duration}",
@@ -372,81 +448,248 @@ async def process_rename(client, message):
                 )
             )
 
-        # --- SEND FILE ---
-        if media.mime_type and media.mime_type.startswith(
-            "video/"
-        ):
-            sent_file = await upload_client.send_video(
-                chat_id=message.chat.id,
-                video=processing_path,
-                thumb=user_thumb,
-                caption=upload_caption,
-                duration=int(duration),
-                width=width,
-                height=height,
-                supports_streaming=True,
-                progress=progress_for_pyrogram,
-                progress_args=(
-                    "📤 Uploading",
-                    status_message,
-                    time.time(),
-                ),
+        # ====================================================
+        # STEP 6: SPLIT LARGE FILE
+        # ====================================================
+
+        # Keep parts under approximately 2 GB.
+        split_limit = 2_000_000_000
+
+        if final_size > split_limit:
+            await status_message.edit_text(
+                "✂️ **Large File Detected**\n\n"
+                f"📦 Size: `{humanbytes(final_size)}`\n"
+                "Splitting into smaller parts..."
             )
 
-        elif media.mime_type and media.mime_type.startswith(
-            "audio/"
-        ):
-            sent_file = await upload_client.send_audio(
-                chat_id=message.chat.id,
-                audio=processing_path,
-                thumb=user_thumb,
-                caption=upload_caption,
-                progress=progress_for_pyrogram,
-                progress_args=(
-                    "📤 Uploading",
-                    status_message,
-                    time.time(),
-                ),
+            file_parts = await split_file(
+                processing_path,
+                chunk_size=split_limit,
             )
 
         else:
-            sent_file = await upload_client.send_document(
-                chat_id=message.chat.id,
-                document=processing_path,
-                thumb=user_thumb,
-                caption=upload_caption,
-                progress=progress_for_pyrogram,
-                progress_args=(
-                    "📤 Uploading",
-                    status_message,
-                    time.time(),
-                ),
+            file_parts = [
+                processing_path
+            ]
+
+        # ====================================================
+        # STEP 7: UPLOAD PARTS
+        # ====================================================
+
+        total_parts = len(
+            file_parts
+        )
+
+        for index, part_path in enumerate(
+            file_parts,
+            start=1,
+        ):
+            part_name = os.path.basename(
+                part_path
             )
 
-        # --- PRIVATE LOG BACKUP ---
-        if Config.LOG_CHANNEL:
-            try:
-                await sent_file.copy(
-                    Config.LOG_CHANNEL
+            part_size = os.path.getsize(
+                part_path
+            )
+
+            await status_message.edit_text(
+                "📤 **AniToon: Uploading...**\n\n"
+                f"📦 **Part:** `{index}/{total_parts}`\n"
+                f"📂 `{part_name}`\n"
+                f"💾 `{humanbytes(part_size)}`"
+            )
+
+            part_caption = (
+                upload_caption
+                + "\n\n"
+                f"📦 **Part:** `{index}/{total_parts}`"
+            )
+
+            # ------------------------------------------------
+            # CHOOSE UPLOAD CLIENT
+            # ------------------------------------------------
+
+            upload_client = client
+
+            if (
+                part_size
+                > 2_000_000_000
+                and hasattr(
+                    client,
+                    "USER",
                 )
-            except Exception as e:
-                print(
-                    f"Log channel backup failed: {e}"
+                and client.USER
+            ):
+                upload_client = client.USER
+
+            # ------------------------------------------------
+            # UPLOAD
+            # ------------------------------------------------
+
+            try:
+                if (
+                    mime_type
+                    and mime_type.startswith(
+                        "video/"
+                    )
+                ):
+                    sent_file = (
+                        await upload_client.send_video(
+                            chat_id=message.chat.id,
+                            video=part_path,
+                            thumb=(
+                                user_thumb
+                                if index == 1
+                                else None
+                            ),
+                            caption=part_caption,
+                            duration=(
+                                int(duration)
+                                if index == 1
+                                else None
+                            ),
+                            width=(
+                                width
+                                if index == 1
+                                else None
+                            ),
+                            height=(
+                                height
+                                if index == 1
+                                else None
+                            ),
+                            supports_streaming=True,
+                            progress=(
+                                progress_for_pyrogram
+                            ),
+                            progress_args=(
+                                f"📤 Uploading Part {index}",
+                                status_message,
+                                time.time(),
+                            ),
+                        )
+                    )
+
+                elif (
+                    mime_type
+                    and mime_type.startswith(
+                        "audio/"
+                    )
+                ):
+                    sent_file = (
+                        await upload_client.send_audio(
+                            chat_id=message.chat.id,
+                            audio=part_path,
+                            thumb=(
+                                user_thumb
+                                if index == 1
+                                else None
+                            ),
+                            caption=part_caption,
+                            progress=(
+                                progress_for_pyrogram
+                            ),
+                            progress_args=(
+                                f"📤 Uploading Part {index}",
+                                status_message,
+                                time.time(),
+                            ),
+                        )
+                    )
+
+                else:
+                    sent_file = (
+                        await upload_client.send_document(
+                            chat_id=message.chat.id,
+                            document=part_path,
+                            thumb=(
+                                user_thumb
+                                if index == 1
+                                else None
+                            ),
+                            caption=part_caption,
+                            progress=(
+                                progress_for_pyrogram
+                            ),
+                            progress_args=(
+                                f"📤 Uploading Part {index}",
+                                status_message,
+                                time.time(),
+                            ),
+                        )
+                    )
+
+            except FloodWait as e:
+                await status_message.edit_text(
+                    "⏳ **Telegram FloodWait**\n\n"
+                    f"Waiting `{e.value}` seconds..."
                 )
 
-        # --- UPDATE USER QUOTA ---
+                await asyncio.sleep(
+                    e.value
+                )
+
+                # Retry using document upload.
+                sent_file = (
+                    await upload_client.send_document(
+                        chat_id=message.chat.id,
+                        document=part_path,
+                        caption=part_caption,
+                    )
+                )
+
+            # ------------------------------------------------
+            # LOG CHANNEL BACKUP
+            # ------------------------------------------------
+
+            if Config.LOG_CHANNEL:
+                try:
+                    await sent_file.copy(
+                        Config.LOG_CHANNEL
+                    )
+                except Exception as e:
+                    print(
+                        f"Log backup failed: {e}"
+                    )
+
+        # ====================================================
+        # STEP 8: UPDATE QUOTA
+        # ====================================================
+
+        total_processed_size = sum(
+            os.path.getsize(part)
+            for part in file_parts
+            if os.path.exists(part)
+        )
+
         await db.update_usage(
             user_id,
-            file_size,
+            total_processed_size,
         )
 
-        await status_message.delete()
+        # ====================================================
+        # STEP 9: COMPLETE
+        # ====================================================
+
+        await status_message.edit_text(
+            "✅ **Processing Complete!**\n\n"
+            f"📦 **Parts:** `{total_parts}`\n"
+            f"💾 **Total Size:** "
+            f"`{humanbytes(final_size)}`"
+        )
+
+    # ========================================================
+    # ERROR HANDLING
+    # ========================================================
 
     except FloodWait as e:
-        await status_message.edit_text(
-            f"⏳ **Telegram FloodWait**\n\n"
-            f"Please wait `{e.value}` seconds."
-        )
+        try:
+            await status_message.edit_text(
+                "⏳ **Telegram FloodWait**\n\n"
+                f"Please wait `{e.value}` seconds."
+            )
+        except Exception:
+            pass
 
     except Exception as e:
         print(
@@ -461,11 +704,18 @@ async def process_rename(client, message):
         except Exception:
             pass
 
+    # ========================================================
+    # CLEANUP
+    # ========================================================
+
     finally:
-        # --- CLEANUP ---
         try:
-            if os.path.exists(path):
-                shutil.rmtree(path)
+            if os.path.exists(
+                work_dir
+            ):
+                shutil.rmtree(
+                    work_dir
+                )
         except Exception as e:
             print(
                 f"Cleanup Error: {e}"
