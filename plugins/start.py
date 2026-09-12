@@ -1,51 +1,11 @@
 from pyrogram import Client, filters
-from pyrogram.types import (
-    InlineKeyboardMarkup,
-    InlineKeyboardButton,
-    Message,
-)
+from pyrogram.types import Message
 
 from config import Config
 from helper.database import db
 from helper.plans import get_plan
 from helper.utils import humanbytes
-
-
-# ============================================================
-# MAIN MENU
-# ============================================================
-
-def main_menu():
-    return InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton(
-                    "🛠 Help & Usage",
-                    callback_data="help",
-                ),
-                InlineKeyboardButton(
-                    "ℹ️ About Bot",
-                    callback_data="about",
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    "⚙️ Settings",
-                    callback_data="settings",
-                ),
-                InlineKeyboardButton(
-                    "💎 Buy Premium",
-                    callback_data="upgrade",
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    "🤖 Create Clone",
-                    callback_data="create_clone",
-                )
-            ],
-        ]
-    )
+from plugins.ui import main_menu
 
 
 # ============================================================
@@ -70,136 +30,98 @@ async def start(
         )
     )
 
-    # ========================================================
-    # REGISTER USER
-    # ========================================================
+    # Register user once.
+    if not await db.is_user_exist(user_id):
+        await db.add_user(user_id)
 
-    if not await db.is_user_exist(
-        user_id
-    ):
-        await db.add_user(
-            user_id
-        )
-
-    # ========================================================
-    # CLONE PAYMENT DEEP LINK
-    # ========================================================
-
+    # --------------------------------------------------------
+    # Main bot deep-link from clone payment button.
+    # Example: /start plans_123456
+    # --------------------------------------------------------
     if (
-        getattr(
-            client,
-            "is_main_bot",
-            False,
-        )
+        getattr(client, "is_main_bot", False)
         and len(message.command) > 1
-        and message.command[1].startswith(
-            "plans_"
-        )
+        and message.command[1].startswith("plans_")
     ):
         try:
             target_bot_id = int(
-                message.command[1].split(
-                    "_",
-                    1,
-                )[1]
+                message.command[1].split("_", 1)[1]
             )
-        except (
-            ValueError,
-            IndexError,
-        ):
+        except (ValueError, IndexError):
             target_bot_id = bot_id
 
-        buttons = [
-            [
-                InlineKeyboardButton(
-                    "⚡ Pro — 10 ⭐",
-                    callback_data=(
-                        f"buy:pro:"
-                        f"{target_bot_id}"
-                    ),
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    "💎 Premium — 20 ⭐",
-                    callback_data=(
-                        f"buy:premium:"
-                        f"{target_bot_id}"
-                    ),
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    "👑 Ultra — 30 ⭐",
-                    callback_data=(
-                        f"buy:ultra:"
-                        f"{target_bot_id}"
-                    ),
-                )
-            ],
+        from helper.plans import all_paid_plans
+        from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+        buttons = []
+
+        for plan_option in all_paid_plans():
+            buttons.append(
+                [
+                    InlineKeyboardButton(
+                        f"{plan_option.name} — {plan_option.stars} ⭐",
+                        callback_data=(
+                            f"buy:{plan_option.key}:"
+                            f"{target_bot_id}"
+                        ),
+                    )
+                ]
+            )
+
+        buttons.append(
             [
                 InlineKeyboardButton(
                     "⬅️ Back",
                     callback_data="start",
                 )
-            ],
-        ]
+            ]
+        )
 
         await message.reply_text(
             "💎 **AniToon Premium Plans**\n\n"
             "Choose a plan for 30 days:\n\n"
-            "🆓 **Free**\n"
-            "⭐ 0 Stars\n"
-            "📊 10 GB/day\n\n"
-            "⚡ **Pro**\n"
-            "⭐ 10 Stars\n"
-            "📊 20 GB/day\n\n"
-            "💎 **Premium**\n"
-            "⭐ 20 Stars\n"
-            "📊 40 GB/day\n\n"
-            "👑 **Ultra**\n"
-            "⭐ 30 Stars\n"
-            "📊 60 GB/day\n\n"
-            "✂️ Large files are split into parts "
-            "when required.",
-            reply_markup=InlineKeyboardMarkup(
-                buttons
-            ),
+            "🆓 **Free** — 0 ⭐ — 10 GB/day\n"
+            "⚡ **Pro** — 10 ⭐ — 20 GB/day\n"
+            "💎 **Premium** — 20 ⭐ — 40 GB/day\n"
+            "👑 **Ultra** — 30 ⭐ — 60 GB/day\n\n"
+            "⭐ Payment is handled by AniToon_1Bot.",
+            reply_markup=InlineKeyboardMarkup(buttons),
         )
 
         return
 
-    # ========================================================
-    # FORCE SUBSCRIBE
-    # ========================================================
-
+    # --------------------------------------------------------
+    # Force-subscription check.
+    # We only block when Telegram positively reports the user
+    # is not a member. If the bot cannot inspect the channel,
+    # do not break normal bot operation.
+    # --------------------------------------------------------
     if Config.FORCE_SUB:
         try:
-            member = (
-                await client.get_chat_member(
-                    Config.FORCE_SUB,
-                    user_id,
-                )
+            member = await client.get_chat_member(
+                Config.FORCE_SUB,
+                user_id,
             )
 
-            if member.status == "kicked":
-                return await message.reply_text(
+            blocked_statuses = {
+                "left",
+                "kicked",
+            }
+
+            if str(member.status).lower() in blocked_statuses:
+                await message.reply_text(
                     "🚫 **Access Denied**\n\n"
-                    "You are banned from using this bot."
+                    "Please join the required channel and then "
+                    "send `/start` again."
                 )
+                return
 
         except Exception:
             pass
 
-    # ========================================================
-    # GET USER PLAN
-    # ========================================================
-
-    subscription = (
-        await db.get_subscription(
-            user_id,
-            bot_id,
-        )
+    subscription = await db.get_subscription(
+        user_id,
+        bot_id,
     )
 
     plan = get_plan(
@@ -219,10 +141,6 @@ async def start(
         0,
     )
 
-    # ========================================================
-    # WELCOME MESSAGE
-    # ========================================================
-
     welcome_text = (
         "🔥 **Welcome to AniToon Bot** 🔥\n\n"
         f"👋 Hello **{message.from_user.first_name}**!\n\n"
@@ -237,34 +155,32 @@ async def start(
         "into smaller parts when required."
     )
 
-    # ========================================================
-    # START IMAGE
-    # ========================================================
+    is_main = getattr(
+        client,
+        "is_main_bot",
+        False,
+    )
 
-    if getattr(
+    keyboard = main_menu(is_main)
+
+    start_pic = getattr(
         Config,
         "START_PIC",
         "",
-    ):
+    )
+
+    if start_pic:
         try:
             await message.reply_photo(
-                photo=Config.START_PIC,
+                photo=start_pic,
                 caption=welcome_text,
-                reply_markup=main_menu(),
+                reply_markup=keyboard,
             )
-
             return
-
-        except Exception as e:
-            print(
-                f"Start image error: {e}"
-            )
-
-    # ========================================================
-    # NORMAL START MESSAGE
-    # ========================================================
+        except Exception:
+            pass
 
     await message.reply_text(
         welcome_text,
-        reply_markup=main_menu(),
+        reply_markup=keyboard,
     )
