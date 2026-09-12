@@ -1,92 +1,59 @@
+import logging
+
 from pyrogram import Client
 
 from config import Config
 from helper.database import db
 
 
+log = logging.getLogger(__name__)
+
+
 class CloneManager:
-    def __init__(
-        self,
-        main_client,
-    ):
+    def __init__(self, main_client):
         self.main_client = main_client
-        self.clones = {}
+        self.clones: dict[int, Client] = {}
 
-
-    # ============================================================
-    # START ONE CLONE
-    # ============================================================
-
-    async def start_clone(
-        self,
-        bot_token,
-    ):
+    async def start_clone(self, bot_token: str):
+        client = None
         try:
+            # Never log the token or include it in an exception message.
+            token_prefix = bot_token.split(":", 1)[0]
             client = Client(
-                name=(
-                    "clone_"
-                    f"{bot_token.split(':')[0]}"
-                ),
+                name=f"clone_{token_prefix}",
                 api_id=Config.API_ID,
                 api_hash=Config.API_HASH,
                 bot_token=bot_token,
                 in_memory=True,
                 workers=100,
-                plugins={
-                    "root": "plugins"
-                },
+                plugins={"root": "plugins"},
             )
-
             client.is_main_bot = False
             client.is_clone_bot = True
+            client.bot_id = 0
 
             await client.start()
-
             me = await client.get_me()
-
             client.bot_id = me.id
-
             self.clones[me.id] = client
 
-            await db.set_clone_status(
-                me.id,
-                "online",
-            )
-
-            print(
-                "✅ Clone started: "
-                f"@{me.username}"
-            )
-
+            await db.set_clone_status(me.id, "online")
+            log.info("Clone started: @%s", me.username or me.id)
             return client
-
-        except Exception as e:
-            print(
-                "❌ Clone startup failed: "
-                f"{e}"
-            )
-
+        except Exception:
+            log.exception("Clone startup failed; main bot will continue running.")
+            if client is not None:
+                try:
+                    await client.stop()
+                except Exception:
+                    pass
             return None
 
-
-    # ============================================================
-    # ADD NEW CLONE
-    # ============================================================
-
-    async def add_clone(
-        self,
-        owner_id,
-        bot_token,
-    ):
-        client = await self.start_clone(
-            bot_token
-        )
-
+    async def add_clone(self, owner_id: int, bot_token: str):
+        client = await self.start_clone(bot_token)
         if not client:
             return None
-
         me = await client.get_me()
-
         await db.add_clone(
             owner_id=owner_id,
             bot_id=me.id,
@@ -94,67 +61,34 @@ class CloneManager:
             bot_name=me.first_name,
             bot_token=bot_token,
         )
-
         return client
-
-
-    # ============================================================
-    # START ALL SAVED CLONES
-    # ============================================================
 
     async def start_all(self):
         try:
-            cursor = db.get_all_clones()
-
-            async for clone in cursor:
-                token = clone.get(
-                    "bot_token"
-                )
-
+            async for clone in db.get_all_clones():
+                token = clone.get("bot_token")
                 if not token:
                     continue
-
-                bot_id = clone.get(
-                    "bot_id"
-                )
-
-                if (
-                    bot_id
-                    and bot_id in self.clones
-                ):
+                bot_id = clone.get("bot_id")
+                if bot_id in self.clones:
                     continue
-
-                await self.start_clone(
-                    token
-                )
-
-        except Exception as e:
-            print(
-                "❌ Error loading clones: "
-                f"{e}"
-            )
-
-
-    # ============================================================
-    # STOP ALL CLONES
-    # ============================================================
+                client = await self.start_clone(token)
+                if client is None and bot_id:
+                    try:
+                        await db.set_clone_status(bot_id, "offline")
+                    except Exception:
+                        pass
+        except Exception:
+            log.exception("Could not load saved clones; main bot remains online.")
 
     async def stop_all(self):
-        for bot_id, client in list(
-            self.clones.items()
-        ):
+        for bot_id, client in list(self.clones.items()):
             try:
                 await client.stop()
-
-                await db.set_clone_status(
-                    bot_id,
-                    "offline",
-                )
-
-            except Exception as e:
-                print(
-                    "❌ Clone stop error: "
-                    f"{e}"
-                )
-
+            except Exception:
+                log.exception("Clone stop failed for %s", bot_id)
+            try:
+                await db.set_clone_status(bot_id, "offline")
+            except Exception:
+                pass
         self.clones.clear()
