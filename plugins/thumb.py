@@ -54,6 +54,22 @@ async def save_photo(
 @Client.on_message(
     filters.private
     & filters.command(
+        ["setthumb", "set_thumb"]
+    )
+)
+async def set_thumbnail_command(
+    client: Client,
+    message: Message,
+):
+    await message.reply_text(
+        "🖼️ **Send me an image now.**\n\n"
+        "I will save it as your custom thumbnail."
+    )
+
+
+@Client.on_message(
+    filters.private
+    & filters.command(
         ["viewthumb", "view_thumb", "showthumb"]
     )
 )
