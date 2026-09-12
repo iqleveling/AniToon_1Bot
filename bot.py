@@ -1,15 +1,19 @@
-import logging
 import asyncio
+import logging
 
 from pyrogram import Client
-from pyrogram.errors import FloodWait
 
 from config import Config
+from helper.clone_manager import CloneManager
 
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
+    format=(
+        "%(asctime)s - "
+        "%(levelname)s - "
+        "%(message)s"
+    ),
 )
 
 
@@ -26,76 +30,51 @@ class Bot(Client):
             },
         )
 
+        self.is_main_bot = True
+        self.is_clone_bot = False
+
+        self.clone_manager = None
+
+
     async def start(self):
-        while True:
-            try:
-                await super().start()
+        await super().start()
 
-                me = await self.get_me()
+        me = await self.get_me()
 
-                print(
-                    f"✅ {me.first_name} "
-                    "[Promax Edition] Started Successfully!"
-                )
+        print(
+            f"✅ {me.first_name} "
+            "[Promax Edition] Started Successfully!"
+        )
 
-                # -----------------------------------------
-                # PREMIUM USER SESSION
-                # -----------------------------------------
+        # --------------------------------------------------------
+        # CLONE MANAGER
+        # --------------------------------------------------------
 
-                if Config.STRING_SESSION:
-                    print(
-                        "💎 Initializing Premium Client..."
-                    )
+        if Config.IS_CLONE_ALLOWED:
+            self.clone_manager = CloneManager(
+                self
+            )
 
-                    self.USER = Client(
-                        name="Premium_User",
-                        session_string=Config.STRING_SESSION,
-                        api_id=Config.API_ID,
-                        api_hash=Config.API_HASH,
-                    )
+            await self.clone_manager.start_all()
 
-                    await self.USER.start()
+            print(
+                "🤖 Clone Engine: Enabled"
+            )
 
-                    print(
-                        "✅ Premium Session Active!"
-                    )
+        else:
+            print(
+                "🤖 Clone Engine: Disabled"
+            )
 
-                return
-
-            except FloodWait as e:
-                wait_time = int(e.value)
-
-                print(
-                    "⏳ Telegram FloodWait detected."
-                )
-                print(
-                    f"Waiting {wait_time} seconds "
-                    "before trying again..."
-                )
-
-                await asyncio.sleep(
-                    wait_time
-                )
-
-            except Exception:
-                logging.exception(
-                    "Bot startup failed."
-                )
-                raise
 
     async def stop(self, *args):
-        try:
-            if hasattr(self, "USER"):
-                await self.USER.stop()
-        except Exception:
-            logging.exception(
-                "Premium session stop error."
-            )
+        if self.clone_manager:
+            await self.clone_manager.stop_all()
 
         await super().stop()
 
         print(
-            "❌ Bot Stopped."
+            "❌ AniToon_1Bot stopped."
         )
 
 
