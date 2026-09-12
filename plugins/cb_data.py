@@ -108,7 +108,8 @@ async def cb_help(
 ):
     await callback_query.answer()
 
-    await callback_query.message.edit_text(
+    await edit_callback_message(
+        callback_query,
         "🛠 **AniToon Help & Usage**\n\n"
         "📂 **Rename:** Send a document, video or audio file "
         "and reply with the new filename.\n\n"
@@ -139,7 +140,8 @@ async def cb_about(
 ):
     await callback_query.answer()
 
-    await callback_query.message.edit_text(
+    await edit_callback_message(
+        callback_query,
         "ℹ️ **About AniToon Promax**\n\n"
         "AniToon Promax Edition is a Telegram file "
         "rename and media-processing bot.\n\n"
@@ -179,7 +181,8 @@ async def cb_settings(
 
     user_id = callback_query.from_user.id
 
-    await callback_query.message.edit_text(
+    await edit_callback_message(
+        callback_query,
         "⚙️ **AniToon Settings**\n\n"
         "Choose what you want to manage:",
         reply_markup=settings_menu(),
@@ -460,7 +463,8 @@ async def cb_metadata_settings(
         "AniToon Official",
     )
 
-    await callback_query.message.edit_text(
+    await edit_callback_message(
+        callback_query,
         "🏷️ **AniToon Metadata Branding**\n\n"
         f"🎵 **Audio:** `{audio_name}`\n"
         f"📜 **Subtitle:** `{subtitle_name}`\n\n"
