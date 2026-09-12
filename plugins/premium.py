@@ -3,8 +3,8 @@ from pyrogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
     ForceReply,
-    LabeledPrice,
 )
+from pyrogram.raw.types import LabeledPrice
 
 from config import Config
 from helper.database import db
