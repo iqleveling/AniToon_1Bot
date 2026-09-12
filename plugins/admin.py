@@ -9,9 +9,21 @@ from config import Config
 from helper.database import db
 
 
-# --- Choice 7-B: ADMIN AUTHENTICATION ---
-# All commands in this file are restricted to Config.ADMIN.
+# ============================================================
+# MAIN BOT CHECK
+# ============================================================
 
+def main_bot_only(client):
+    return getattr(
+        client,
+        "is_main_bot",
+        False,
+    )
+
+
+# ============================================================
+# USERS
+# ============================================================
 
 @Client.on_message(
     filters.private
@@ -22,17 +34,20 @@ async def users_stats(
     client: Client,
     message: Message,
 ):
-    """Shows the total number of registered users."""
+    if not main_bot_only(client):
+        return
 
     count = await db.total_users_count()
 
     await message.reply_text(
-        "📊 **AniToon Stats**\n\n"
-        f"👥 **Total Registered Users:** `{count}`"
+        "📊 **AniToon Owner Statistics**\n\n"
+        f"👥 **Total Users:** `{count}`"
     )
 
 
-# --- Choice 13-B: BROADCAST ---
+# ============================================================
+# BROADCAST
+# ============================================================
 
 @Client.on_message(
     filters.private
@@ -43,28 +58,22 @@ async def broadcast_handler(
     client: Client,
     message: Message,
 ):
-    """
-    Broadcasts a replied message to all registered users.
-    """
+    if not main_bot_only(client):
+        return
 
     if not message.reply_to_message:
         return await message.reply_text(
-            "❌ **Error**\n\n"
-            "Reply to the message you want to broadcast, "
-            "then use `/broadcast`."
+            "❌ Reply to the message you want to broadcast."
         )
 
     status = await message.reply_text(
-        "📣 **Broadcast Initialized...**\n\n"
-        "Please wait..."
+        "📣 **Broadcast Started...**"
     )
-
-    all_users = await db.get_all_users()
 
     success = 0
     failed = 0
 
-    async for user in all_users:
+    async for user in await db.get_all_users():
         user_id = user.get("id")
 
         if not user_id:
@@ -77,20 +86,23 @@ async def broadcast_handler(
 
             success += 1
 
-            # Small delay for flood protection
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(
+                0.05
+            )
 
         except Exception:
             failed += 1
 
     await status.edit_text(
-        "📣 **Broadcast Results**\n\n"
+        "📣 **Broadcast Complete**\n\n"
         f"✅ **Sent:** `{success}`\n"
         f"❌ **Failed:** `{failed}`"
     )
 
 
-# --- Choice 10-B: PREMIUM MANAGEMENT ---
+# ============================================================
+# PREMIUM
+# ============================================================
 
 @Client.on_message(
     filters.private
@@ -101,9 +113,8 @@ async def upgrade_user(
     client: Client,
     message: Message,
 ):
-    """
-    Upgrades a user to Premium.
-    """
+    if not main_bot_only(client):
+        return
 
     if len(message.command) < 2:
         return await message.reply_text(
@@ -112,34 +123,29 @@ async def upgrade_user(
         )
 
     try:
-        user_id = int(message.command[1])
+        user_id = int(
+            message.command[1]
+        )
     except ValueError:
         return await message.reply_text(
-            "❌ **Invalid user ID.**"
+            "❌ Invalid user ID."
         )
 
-    if not await db.is_user_exist(user_id):
+    if not await db.is_user_exist(
+        user_id
+    ):
         return await message.reply_text(
-            f"❌ User `{user_id}` is not registered."
+            "❌ User is not registered."
         )
 
     await db.set_premium(
         user_id,
-        True
+        True,
     )
 
-    try:
-        await client.send_message(
-            user_id,
-            "✨ **Plan Upgraded!**\n\n"
-            "You are now a **Premium** user.\n\n"
-            "💎 Premium benefits are now enabled."
-        )
-    except Exception:
-        pass
-
     await message.reply_text(
-        f"💎 User `{user_id}` upgraded to **Premium Tier**."
+        f"💎 User `{user_id}` "
+        "**upgraded to Premium.**"
     )
 
 
@@ -152,9 +158,8 @@ async def downgrade_user(
     client: Client,
     message: Message,
 ):
-    """
-    Removes Premium status from a user.
-    """
+    if not main_bot_only(client):
+        return
 
     if len(message.command) < 2:
         return await message.reply_text(
@@ -163,28 +168,28 @@ async def downgrade_user(
         )
 
     try:
-        user_id = int(message.command[1])
+        user_id = int(
+            message.command[1]
+        )
     except ValueError:
         return await message.reply_text(
-            "❌ **Invalid user ID.**"
-        )
-
-    if not await db.is_user_exist(user_id):
-        return await message.reply_text(
-            f"❌ User `{user_id}` is not registered."
+            "❌ Invalid user ID."
         )
 
     await db.set_premium(
         user_id,
-        False
+        False,
     )
 
     await message.reply_text(
-        f"🆓 User `{user_id}` downgraded to **Free Tier**."
+        f"🆓 User `{user_id}` "
+        "returned to Free Tier."
     )
 
 
-# --- Choice 7-B: BAN MANAGEMENT ---
+# ============================================================
+# BAN
+# ============================================================
 
 @Client.on_message(
     filters.private
@@ -195,7 +200,8 @@ async def ban_handler(
     client: Client,
     message: Message,
 ):
-    """Bans a registered user."""
+    if not main_bot_only(client):
+        return
 
     if len(message.command) < 2:
         return await message.reply_text(
@@ -204,23 +210,26 @@ async def ban_handler(
         )
 
     try:
-        user_id = int(message.command[1])
+        user_id = int(
+            message.command[1]
+        )
     except ValueError:
         return await message.reply_text(
-            "❌ **Invalid user ID.**"
+            "❌ Invalid user ID."
         )
 
-    if not await db.is_user_exist(user_id):
-        return await message.reply_text(
-            f"❌ User `{user_id}` is not registered."
-        )
-
-    await db.ban_user(user_id)
-
-    await message.reply_text(
-        f"🚫 User `{user_id}` has been **Banned**."
+    await db.ban_user(
+        user_id
     )
 
+    await message.reply_text(
+        f"🚫 User `{user_id}` **banned**."
+    )
+
+
+# ============================================================
+# UNBAN
+# ============================================================
 
 @Client.on_message(
     filters.private
@@ -231,7 +240,8 @@ async def unban_handler(
     client: Client,
     message: Message,
 ):
-    """Unbans a registered user."""
+    if not main_bot_only(client):
+        return
 
     if len(message.command) < 2:
         return await message.reply_text(
@@ -240,25 +250,26 @@ async def unban_handler(
         )
 
     try:
-        user_id = int(message.command[1])
+        user_id = int(
+            message.command[1]
+        )
     except ValueError:
         return await message.reply_text(
-            "❌ **Invalid user ID.**"
+            "❌ Invalid user ID."
         )
 
-    if not await db.is_user_exist(user_id):
-        return await message.reply_text(
-            f"❌ User `{user_id}` is not registered."
-        )
-
-    await db.unban_user(user_id)
+    await db.unban_user(
+        user_id
+    )
 
     await message.reply_text(
-        f"✅ User `{user_id}` has been **Unbanned**."
+        f"✅ User `{user_id}` **unbanned**."
     )
 
 
-# --- BOT RESTART ---
+# ============================================================
+# RESTART MAIN BOT
+# ============================================================
 
 @Client.on_message(
     filters.private
@@ -269,12 +280,11 @@ async def restart_bot(
     client: Client,
     message: Message,
 ):
-    """
-    Restarts the current Python process.
-    """
+    if not main_bot_only(client):
+        return
 
     await message.reply_text(
-        "🔄 **AniToon Bot is restarting...**"
+        "🔄 **AniToon_1Bot is restarting...**"
     )
 
     await asyncio.sleep(1)
@@ -282,5 +292,5 @@ async def restart_bot(
     os.execl(
         sys.executable,
         sys.executable,
-        *sys.argv
+        *sys.argv,
     )
