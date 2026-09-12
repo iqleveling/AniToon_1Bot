@@ -326,7 +326,7 @@ class Database:
         )
 
 
-    async def get_all_clones(self):
+    def get_all_clones(self):
         return self.clones.find({})
 
 
