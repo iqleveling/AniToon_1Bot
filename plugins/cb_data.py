@@ -2,463 +2,211 @@ from pyrogram import Client, filters
 from pyrogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
-    CallbackQuery,
+    Message,
 )
 
 from config import Config
 from helper.database import db
+from helper.plans import get_plan
 from helper.utils import humanbytes
 
 
-# ============================================================
-# CALLBACK HANDLER
-# ============================================================
+def main_menu():
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "🛠 Help & Usage",
+                    callback_data="help",
+                ),
+                InlineKeyboardButton(
+                    "ℹ️ About Bot",
+                    callback_data="about",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    "⚙️ Settings",
+                    callback_data="settings",
+                ),
+                InlineKeyboardButton(
+                    "💎 Buy Premium",
+                    callback_data="upgrade",
+                ),
+            ],
+        ]
+    )
 
-@Client.on_callback_query()
-async def cb_handler(
+
+@Client.on_message(
+    filters.private
+    & filters.command("start")
+)
+async def start(
     client: Client,
-    query: CallbackQuery,
+    message: Message,
 ):
-    data = query.data
-    user_id = query.from_user.id
+    user_id = message.from_user.id
+    bot_id = getattr(
+        client,
+        "bot_id",
+        0,
+    )
 
-    # --------------------------------------------------------
-    # HOME
-    # --------------------------------------------------------
-
-    if data == "start":
-        user_data = await db.get_user_data(user_id)
-
-        if not user_data:
-            await db.add_user(user_id)
-            user_data = await db.get_user_data(user_id)
-
-        used = await db.get_usage(user_id)
-        is_premium = user_data.get(
-            "is_premium",
-            False,
+    if not await db.is_user_exist(
+        user_id
+    ):
+        await db.add_user(
+            user_id
         )
 
-        if is_premium:
-            remaining = "♾️ Unlimited"
-        else:
-            remaining = humanbytes(
-                max(
-                    Config.DAILY_LIMIT - used,
-                    0,
+    # ========================================================
+    # CLONE -> MAIN BOT PLAN PAGE
+    # ========================================================
+
+    if (
+        getattr(
+            client,
+            "is_main_bot",
+            False,
+        )
+        and len(message.command) > 1
+        and message.command[1].startswith(
+            "plans_"
+        )
+    ):
+        try:
+            target_bot_id = int(
+                message.command[1].split(
+                    "_",
+                    1,
+                )[1]
+            )
+        except ValueError:
+            target_bot_id = bot_id
+
+        from helper.plans import all_paid_plans
+
+        buttons = []
+
+        for plan in all_paid_plans():
+            buttons.append(
+                [
+                    InlineKeyboardButton(
+                        (
+                            f"{plan.name} — "
+                            f"{plan.stars} ⭐"
+                        ),
+                        callback_data=(
+                            f"buy:{plan.key}:"
+                            f"{target_bot_id}"
+                        ),
+                    )
+                ]
+            )
+
+        buttons.append(
+            [
+                InlineKeyboardButton(
+                    "⬅️ Back",
+                    callback_data="start",
+                )
+            ]
+        )
+
+        await message.reply_text(
+            "💎 **AniToon Premium Plans**\n\n"
+            "Choose your 30-day plan:\n\n"
+            "🆓 **Free** — 0 ⭐ — 10 GB/day\n"
+            "⚡ **Pro** — 10 ⭐ — 20 GB/day\n"
+            "💎 **Premium** — 20 ⭐ — 40 GB/day\n"
+            "👑 **Ultra** — 30 ⭐ — 60 GB/day\n\n"
+            "⭐ Payment is handled by AniToon_1Bot.",
+            reply_markup=InlineKeyboardMarkup(
+                buttons
+            ),
+        )
+
+        return
+
+    # ========================================================
+    # FORCE SUBSCRIBE
+    # ========================================================
+
+    if Config.FORCE_SUB:
+        try:
+            member = (
+                await client.get_chat_member(
+                    Config.FORCE_SUB,
+                    user_id,
                 )
             )
 
-        keyboard = InlineKeyboardMarkup(
-            [
-                [
-                    InlineKeyboardButton(
-                        "🛠 Help & Usage",
-                        callback_data="help",
-                    ),
-                    InlineKeyboardButton(
-                        "ℹ️ About Bot",
-                        callback_data="about",
-                    ),
-                ],
-                [
-                    InlineKeyboardButton(
-                        "⚙️ Settings",
-                        callback_data="settings",
-                    ),
-                    InlineKeyboardButton(
-                        "💎 Buy Premium",
-                        callback_data="upgrade",
-                    ),
-                ],
-            ]
-        )
+            if member.status == "kicked":
+                return await message.reply_text(
+                    "🚫 **Access Denied**"
+                )
 
-        await query.message.edit_text(
-            "🔥 **Welcome to AniToon Promax Bot** 🔥\n\n"
-            f"👤 **User:** {query.from_user.first_name}\n\n"
-            f"📊 **Plan:** "
-            f"{'💎 Premium' if is_premium else '🆓 Free'}\n"
-            f"🚀 **Used Today:** {humanbytes(used)}\n"
-            f"⏳ **Remaining:** {remaining}\n\n"
-            "Select an option below:",
-            reply_markup=keyboard,
-        )
+        except Exception:
+            pass
 
-    # --------------------------------------------------------
-    # ABOUT
-    # --------------------------------------------------------
+    # ========================================================
+    # PLAN STATUS
+    # ========================================================
 
-    elif data == "about":
-        keyboard = InlineKeyboardMarkup(
-            [
-                [
-                    InlineKeyboardButton(
-                        "⬅️ Back",
-                        callback_data="start",
-                    )
-                ]
-            ]
-        )
-
-        await query.message.edit_text(
-            "🤖 **AniToon Promax Bot**\n\n"
-            "📂 **File Processing:** Active ✅\n"
-            "🏷️ **Metadata Branding:** Active ✅\n"
-            "⚡ **Concurrent Processing:** Active ✅\n"
-            "🗄️ **MongoDB Database:** Connected ✅\n"
-            "📊 **Daily Quota System:** Active ✅\n\n"
-            f"👤 **Developer:** @AniToon_Official\n\n"
-            "Built with Pyrogram, MongoDB and FFmpeg.",
-            reply_markup=keyboard,
-        )
-
-    # --------------------------------------------------------
-    # HELP
-    # --------------------------------------------------------
-
-    elif data == "help":
-        keyboard = InlineKeyboardMarkup(
-            [
-                [
-                    InlineKeyboardButton(
-                        "🧩 How to Join Parts",
-                        callback_data="how_to_join",
-                    )
-                ],
-                [
-                    InlineKeyboardButton(
-                        "⚙️ Settings",
-                        callback_data="settings",
-                    )
-                ],
-                [
-                    InlineKeyboardButton(
-                        "⬅️ Back",
-                        callback_data="start",
-                    )
-                ],
-            ]
-        )
-
-        await query.message.edit_text(
-            "❓ **How to Use AniToon Promax**\n\n"
-            "1️⃣ Send a document, video or audio file.\n"
-            "2️⃣ The bot detects the file automatically.\n"
-            "3️⃣ Enter the new filename.\n"
-            "4️⃣ FFmpeg processes the media metadata.\n"
-            "5️⃣ The renamed file is uploaded back to you.\n\n"
-            "🖼️ **Thumbnail:**\n"
-            "Send an image to save it as your permanent thumbnail.\n\n"
-            "📝 **Caption:**\n"
-            "Use `/set_caption` to save a custom caption.\n\n"
-            "🏷️ **Metadata:**\n"
-            "Customize internal audio and subtitle track names.\n\n"
-            "✂️ **Large Files:**\n"
-            "Files above the split limit can be uploaded in multiple parts.",
-            reply_markup=keyboard,
-        )
-
-    # --------------------------------------------------------
-    # HOW TO JOIN PARTS
-    # --------------------------------------------------------
-
-    elif data == "how_to_join":
-        keyboard = InlineKeyboardMarkup(
-            [
-                [
-                    InlineKeyboardButton(
-                        "⬅️ Back to Help",
-                        callback_data="help",
-                    )
-                ]
-            ]
-        )
-
-        tutorial_text = (
-            "🧩 **How to Join Split Parts**\n\n"
-            "Large files may be divided into multiple parts such as:\n\n"
-            "`filename.part001`\n"
-            "`filename.part002`\n"
-            "`filename.part003`\n\n"
-            "📥 **Step 1 — Download ALL Parts**\n"
-            "Download every part before joining them.\n"
-            "Keep all parts inside the **same folder**.\n\n"
-            "🪟 **Windows**\n"
-            "Use 7-Zip or WinRAR and open the first part:\n"
-            "`filename.part001`\n\n"
-            "Choose the extract option and the software will "
-            "process the numbered parts in order.\n\n"
-            "📱 **Android**\n"
-            "Use a file archive application that supports "
-            "multi-part archives/files. Select the first part "
-            "and follow the application's extraction instructions.\n\n"
-            "🐧 **Linux / macOS**\n"
-            "For raw binary parts, you can join them with:\n\n"
-            "`cat filename.part* > output_file`\n\n"
-            "⚠️ **Important**\n"
-            "Do not rename the individual parts before joining them.\n"
-            "Make sure every part is completely downloaded and "
-            "that the numbering is correct."
-        )
-
-        await query.message.edit_text(
-            tutorial_text,
-            reply_markup=keyboard,
-        )
-
-    # --------------------------------------------------------
-    # PREMIUM / UPGRADE
-    # --------------------------------------------------------
-
-    elif data == "upgrade":
-        keyboard = InlineKeyboardMarkup(
-            [
-                [
-                    InlineKeyboardButton(
-                        "📩 Contact Admin",
-                        url="https://t.me/AniToon_Official",
-                    )
-                ],
-                [
-                    InlineKeyboardButton(
-                        "⬅️ Back",
-                        callback_data="start",
-                    )
-                ],
-            ]
-        )
-
-        await query.message.edit_text(
-            "💎 **AniToon Premium** 💎\n\n"
-            "Premium access provides:\n\n"
-            "✅ Higher file-processing limits\n"
-            "✅ Premium account status\n"
-            "✅ Priority processing\n"
-            "✅ Advanced bot features\n\n"
-            "📩 Contact the administrator for Premium access.",
-            reply_markup=keyboard,
-        )
-
-    # --------------------------------------------------------
-    # SETTINGS
-    # --------------------------------------------------------
-
-    elif data == "settings":
-        thumb = await db.get_thumbnail(user_id)
-        caption = await db.get_caption(user_id)
-
-        keyboard = InlineKeyboardMarkup(
-            [
-                [
-                    InlineKeyboardButton(
-                        "🖼️ Thumbnail",
-                        callback_data="thumb_settings",
-                    ),
-                    InlineKeyboardButton(
-                        "📝 Caption",
-                        callback_data="caption_settings",
-                    ),
-                ],
-                [
-                    InlineKeyboardButton(
-                        "🏷️ Metadata",
-                        callback_data="metadata_settings",
-                    )
-                ],
-                [
-                    InlineKeyboardButton(
-                        "⬅️ Back",
-                        callback_data="start",
-                    )
-                ],
-            ]
-        )
-
-        await query.message.edit_text(
-            "⚙️ **AniToon Settings**\n\n"
-            f"🖼️ **Thumbnail:** "
-            f"{'✅ Saved' if thumb else '❌ Not Set'}\n"
-            f"📝 **Caption:** "
-            f"{'✅ Saved' if caption else '❌ Not Set'}\n\n"
-            "Choose a setting below:",
-            reply_markup=keyboard,
-        )
-
-    # --------------------------------------------------------
-    # THUMBNAIL SETTINGS
-    # --------------------------------------------------------
-
-    elif data == "thumb_settings":
-        thumb = await db.get_thumbnail(user_id)
-
-        keyboard = InlineKeyboardMarkup(
-            [
-                [
-                    InlineKeyboardButton(
-                        "🗑️ Delete Thumbnail",
-                        callback_data="del_thumb",
-                    )
-                ],
-                [
-                    InlineKeyboardButton(
-                        "⬅️ Back",
-                        callback_data="settings",
-                    )
-                ],
-            ]
-        )
-
-        await query.message.edit_text(
-            "🖼️ **Thumbnail Settings**\n\n"
-            f"**Status:** "
-            f"{'✅ Saved' if thumb else '❌ Not Set'}\n\n"
-            "Send an image to set or replace your permanent thumbnail.",
-            reply_markup=keyboard,
-        )
-
-    # --------------------------------------------------------
-    # CAPTION SETTINGS
-    # --------------------------------------------------------
-
-    elif data == "caption_settings":
-        caption = await db.get_caption(user_id)
-
-        keyboard = InlineKeyboardMarkup(
-            [
-                [
-                    InlineKeyboardButton(
-                        "📝 Caption Help",
-                        callback_data="help_caption",
-                    )
-                ],
-                [
-                    InlineKeyboardButton(
-                        "🗑️ Delete Caption",
-                        callback_data="del_caption",
-                    )
-                ],
-                [
-                    InlineKeyboardButton(
-                        "⬅️ Back",
-                        callback_data="settings",
-                    )
-                ],
-            ]
-        )
-
-        current_caption = (
-            f"`{caption}`"
-            if caption
-            else "❌ Not Set"
-        )
-
-        await query.message.edit_text(
-            "📝 **Caption Settings**\n\n"
-            f"**Current Caption:**\n{current_caption}\n\n"
-            "Use `/set_caption` to create or change your caption.",
-            reply_markup=keyboard,
-        )
-
-    # --------------------------------------------------------
-    # DELETE THUMBNAIL
-    # --------------------------------------------------------
-
-    elif data == "del_thumb":
-        await db.set_thumbnail(
+    subscription = (
+        await db.get_subscription(
             user_id,
-            None,
+            bot_id,
         )
+    )
 
-        await query.message.edit_text(
-            "🗑️ **Permanent Thumbnail Deleted.**\n\n"
-            "Send a new image whenever you want to set another thumbnail.",
-            reply_markup=InlineKeyboardMarkup(
-                [
-                    [
-                        InlineKeyboardButton(
-                            "⬅️ Back",
-                            callback_data="thumb_settings",
-                        )
-                    ]
-                ]
-            ),
+    plan = get_plan(
+        subscription.get(
+            "plan",
+            "free",
         )
+    )
 
-    # --------------------------------------------------------
-    # METADATA SETTINGS
-    # --------------------------------------------------------
+    used = await db.get_usage(
+        user_id,
+        bot_id,
+    )
 
-    elif data == "metadata_settings":
-        await query.answer(
-            "Use /metadata to manage track names.",
-            show_alert=True,
+    remaining = max(
+        plan.daily_limit - used,
+        0,
+    )
+
+    # ========================================================
+    # WELCOME
+    # ========================================================
+
+    text = (
+        "🔥 **Welcome to AniToon Bot** 🔥\n\n"
+        f"Hi **{message.from_user.first_name}**!\n\n"
+        "📂 Send me a file or video to rename it.\n\n"
+        f"💎 **Plan:** {plan.name}\n"
+        f"🚀 **Used Today:** "
+        f"`{humanbytes(used)}`\n"
+        f"⏳ **Remaining:** "
+        f"`{humanbytes(remaining)}`\n\n"
+        "✂️ Large files are automatically split "
+        "into parts when necessary."
+    )
+
+    if getattr(
+        Config,
+        "START_PIC",
+        "",
+    ):
+        await message.reply_photo(
+            photo=Config.START_PIC,
+            caption=text,
+            reply_markup=main_menu(),
         )
-        return
-
-    # --------------------------------------------------------
-    # CAPTION HELP
-    # --------------------------------------------------------
-
-    elif data == "help_caption":
-        keyboard = InlineKeyboardMarkup(
-            [
-                [
-                    InlineKeyboardButton(
-                        "⬅️ Back",
-                        callback_data="caption_settings",
-                    )
-                ]
-            ]
-        )
-
-        await query.message.edit_text(
-            "📝 **Caption Help**\n\n"
-            "You can use these placeholders:\n\n"
-            "• `{filename}` — File name\n"
-            "• `{filesize}` — File size\n"
-            "• `{duration}` — Video duration\n\n"
-            "**Example:**\n"
-            "`🎬 {filename}`\n"
-            "`📦 {filesize}`\n"
-            "`⏱️ {duration}`",
-            reply_markup=keyboard,
-        )
-
-    # --------------------------------------------------------
-    # DELETE CAPTION
-    # --------------------------------------------------------
-
-    elif data == "del_caption":
-        await db.set_caption(
-            user_id,
-            None,
-        )
-
-        await query.message.edit_text(
-            "🗑️ **Custom Caption Deleted.**\n\n"
-            "Your files will now use the default caption.",
-            reply_markup=InlineKeyboardMarkup(
-                [
-                    [
-                        InlineKeyboardButton(
-                            "⬅️ Back",
-                            callback_data="caption_settings",
-                        )
-                    ]
-                ]
-            ),
-        )
-
-    # --------------------------------------------------------
-    # UNKNOWN CALLBACK
-    # --------------------------------------------------------
-
     else:
-        await query.answer(
-            "This option is not available.",
-            show_alert=True,
+        await message.reply_text(
+            text,
+            reply_markup=main_menu(),
         )
-        return
-
-    await query.answer()
