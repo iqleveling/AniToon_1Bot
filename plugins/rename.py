@@ -314,19 +314,41 @@ async def process_rename(
         # METADATA
         # ----------------------------------------------------
 
-        await status.edit_text(
-            "🏷️ **AniToon: Processing metadata...**"
+        mime_type = getattr(
+            media,
+            "mime_type",
+            None,
         )
 
-        success = await fix_metadata(
-            download_path,
-            output_path,
-        )
+        processing_path = download_path
 
-        if success:
-            processing_path = output_path
-        else:
-            processing_path = download_path
+        if mime_type and (
+            mime_type.startswith("video/")
+            or mime_type.startswith("audio/")
+        ):
+            await status.edit_text(
+                "🏷️ **AniToon: Processing metadata...**"
+            )
+
+            audio_name = user_data.get(
+                "audio_name",
+                "AniToon Official",
+            )
+
+            subtitle_name = user_data.get(
+                "sub_name",
+                "AniToon Official",
+            )
+
+            success = await fix_metadata(
+                download_path,
+                output_path,
+                audio_name=audio_name,
+                subtitle_name=subtitle_name,
+            )
+
+            if success:
+                processing_path = output_path
 
         # ----------------------------------------------------
         # VIDEO INFORMATION
@@ -335,12 +357,6 @@ async def process_rename(
         duration = 0
         width = 0
         height = 0
-
-        mime_type = getattr(
-            media,
-            "mime_type",
-            None,
-        )
 
         if (
             mime_type
