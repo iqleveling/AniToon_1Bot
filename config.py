@@ -3,10 +3,12 @@ import os
 
 class Config:
     # ============================================================
-    # TELEGRAM BOT SETTINGS
+    # TELEGRAM
     # ============================================================
 
-    API_ID = int(os.environ.get("API_ID", "0"))
+    API_ID = int(
+        os.environ.get("API_ID", "0")
+    )
 
     API_HASH = os.environ.get(
         "API_HASH",
@@ -30,7 +32,7 @@ class Config:
 
 
     # ============================================================
-    # ADMIN SETTINGS
+    # MAIN BOT ADMINS
     # ============================================================
 
     ADMIN = [
@@ -44,16 +46,6 @@ class Config:
 
 
     # ============================================================
-    # PREMIUM USER SESSION
-    # ============================================================
-
-    STRING_SESSION = os.environ.get(
-        "STRING_SESSION",
-        "",
-    )
-
-
-    # ============================================================
     # FORCE SUBSCRIBE
     # ============================================================
 
@@ -64,7 +56,7 @@ class Config:
 
 
     # ============================================================
-    # LOG / BACKUP CHANNEL
+    # LOG CHANNEL
     # ============================================================
 
     LOG_CHANNEL = int(
@@ -76,8 +68,8 @@ class Config:
 
 
     # ============================================================
-    # DAILY QUOTA
-    # Default: 10 GB per day for Free users
+    # DAILY LIMIT
+    # Default: 10 GB
     # ============================================================
 
     DAILY_LIMIT = int(
@@ -87,21 +79,6 @@ class Config:
                 10 * 1024 * 1024 * 1024
             ),
         )
-    )
-
-
-    # ============================================================
-    # INTERNAL MEDIA BRANDING
-    # ============================================================
-
-    AUDIO_NAME = os.environ.get(
-        "AUDIO_NAME",
-        "AniToon Official",
-    )
-
-    SUBTITLE_NAME = os.environ.get(
-        "SUBTITLE_NAME",
-        "AniToon Official",
     )
 
 
@@ -121,7 +98,7 @@ class Config:
 
 
     # ============================================================
-    # BOT CLONE SYSTEM
+    # CLONE ENGINE
     # ============================================================
 
     IS_CLONE_ALLOWED = (
