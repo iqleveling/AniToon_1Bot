@@ -167,7 +167,8 @@ async def cb_reset_meta(
         show_alert=True,
     )
 
-    await cb.message.edit_text(
+    await edit_callback_message(
+        cb,
         "🔄 **Metadata branding reset to default.**\n\n"
         "🎵 Audio: `AniToon Official`\n"
         "📜 Subtitle: `AniToon Official`",
