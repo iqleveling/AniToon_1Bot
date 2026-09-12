@@ -196,7 +196,6 @@ async def user_plan_status(
                 ]
             ]
         )
-
     elif Config.MAIN_BOT_USERNAME:
         keyboard = InlineKeyboardMarkup(
             [
@@ -212,7 +211,6 @@ async def user_plan_status(
                 ]
             ]
         )
-
     else:
         keyboard = None
 
@@ -473,16 +471,20 @@ async def pre_checkout_handler(
 
 @Client.on_message(
     filters.private
-    & filters.successful_payment
+    & filters.incoming
 )
-async def successful_payment(
+async def payment_message_handler(
     client,
     message,
 ):
     if not is_main_bot(client):
         return
 
-    payment = message.successful_payment
+    payment = getattr(
+        message,
+        "successful_payment",
+        None,
+    )
 
     if not payment:
         return
@@ -565,8 +567,10 @@ async def successful_payment(
             )
         )
 
-        expires_at = subscription.get(
-            "expires_at"
+        expires_at = (
+            subscription.get(
+                "expires_at"
+            )
         )
 
         expiry_text = (
