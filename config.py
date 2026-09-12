@@ -16,23 +16,28 @@ class Config:
     API_HASH = os.environ.get(
         "API_HASH",
         "",
-    )
+    ).strip()
 
     BOT_TOKEN = os.environ.get(
         "BOT_TOKEN",
         "",
-    )
-
+    ).strip()
 
     # ============================================================
     # DATABASE
     # ============================================================
 
-    DATABASE_URL = os.environ.get(
-        "DATABASE_URL",
-        "",
-    )
-
+    # DATABASE_URL is the primary Render variable.
+    # MONGO_URI is supported as backward compatibility.
+    DATABASE_URL = (
+        os.environ.get(
+            "DATABASE_URL"
+        )
+        or os.environ.get(
+            "MONGO_URI"
+        )
+        or ""
+    ).strip()
 
     # ============================================================
     # MAIN BOT ADMINS
@@ -47,10 +52,8 @@ class Config:
         if admin_id.strip()
     ]
 
-
     # ============================================================
     # MAIN BOT USERNAME
-    # Used by clones to open the central Stars payment page.
     # ============================================================
 
     MAIN_BOT_USERNAME = (
@@ -61,7 +64,6 @@ class Config:
         .strip()
         .lstrip("@")
     )
-
 
     # ============================================================
     # FORCE SUBSCRIBE
@@ -76,7 +78,6 @@ class Config:
         .lstrip("@")
     )
 
-
     # ============================================================
     # LOG CHANNEL
     # ============================================================
@@ -87,7 +88,6 @@ class Config:
             "0",
         )
     )
-
 
     # ============================================================
     # PROGRESS BAR
@@ -102,7 +102,6 @@ class Config:
         "REMAINING_STR",
         "⚪",
     )
-
 
     # ============================================================
     # CLONE ENGINE
@@ -121,7 +120,6 @@ class Config:
         )
     )
 
-
     # ============================================================
     # START IMAGE
     # ============================================================
@@ -129,4 +127,17 @@ class Config:
     START_PIC = os.environ.get(
         "START_PIC",
         "",
+    ).strip()
+
+    # ============================================================
+    # OPTIONAL OWNER COMPATIBILITY
+    # ============================================================
+
+    # Existing project uses ADMIN.
+    # OWNER_ID is supported as an additional fallback.
+    OWNER_ID = int(
+        os.environ.get(
+            "OWNER_ID",
+            "0",
+        )
     )
