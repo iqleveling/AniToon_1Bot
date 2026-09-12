@@ -7,7 +7,10 @@ class Config:
     # ============================================================
 
     API_ID = int(
-        os.environ.get("API_ID", "0")
+        os.environ.get(
+            "API_ID",
+            "0",
+        )
     )
 
     API_HASH = os.environ.get(
@@ -46,13 +49,32 @@ class Config:
 
 
     # ============================================================
+    # MAIN BOT USERNAME
+    # Used by clones to open the central Stars payment page.
+    # ============================================================
+
+    MAIN_BOT_USERNAME = (
+        os.environ.get(
+            "MAIN_BOT_USERNAME",
+            "",
+        )
+        .strip()
+        .lstrip("@")
+    )
+
+
+    # ============================================================
     # FORCE SUBSCRIBE
     # ============================================================
 
-    FORCE_SUB = os.environ.get(
-        "FORCE_SUB",
-        "",
-    ).strip().lstrip("@")
+    FORCE_SUB = (
+        os.environ.get(
+            "FORCE_SUB",
+            "",
+        )
+        .strip()
+        .lstrip("@")
+    )
 
 
     # ============================================================
@@ -63,21 +85,6 @@ class Config:
         os.environ.get(
             "LOG_CHANNEL",
             "0",
-        )
-    )
-
-
-    # ============================================================
-    # DAILY LIMIT
-    # Default: 10 GB
-    # ============================================================
-
-    DAILY_LIMIT = int(
-        os.environ.get(
-            "DAILY_LIMIT",
-            str(
-                10 * 1024 * 1024 * 1024
-            ),
         )
     )
 
