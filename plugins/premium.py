@@ -20,6 +20,7 @@ from helper.plans import (
     get_plan,
 )
 from helper.utils import humanbytes
+from plugins.ui import edit_callback_message
 
 
 # ============================================================
@@ -237,8 +238,9 @@ async def upgrade_button(
 
     if not is_main_bot(client):
         if not Config.MAIN_BOT_USERNAME:
-            return await callback_query.message.edit_text(
-                "❌ **Main payment bot is not configured.**"
+            return await edit_callback_message(
+                callback_query,
+                "❌ **Main payment bot is not configured.**",
             )
 
         await callback_query.message.edit_text(
