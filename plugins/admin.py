@@ -131,7 +131,7 @@ async def broadcast(
     success = 0
     failed = 0
 
-    cursor = await db.get_all_users()
+    cursor = db.get_all_users()
 
     async for user in cursor:
         user_id = user.get(
