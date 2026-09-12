@@ -1,9 +1,16 @@
-from pyrogram import Client
-from config import Config
 import logging
+import asyncio
 
-# Set up logging to track internal errors and performance
-logging.basicConfig(level=logging.ERROR)
+from pyrogram import Client
+from pyrogram.errors import FloodWait
+
+from config import Config
+
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+)
 
 
 class Bot(Client):
@@ -13,42 +20,83 @@ class Bot(Client):
             api_id=Config.API_ID,
             api_hash=Config.API_HASH,
             bot_token=Config.BOT_TOKEN,
-
-            # Promax: Increased workers for high-speed concurrent tasks
             workers=100,
-
-            # Modular: Automatically loads every file in the /plugins folder
-            plugins=dict(root="plugins")
+            plugins={
+                "root": "plugins"
+            },
         )
 
     async def start(self):
-        await super().start()
+        while True:
+            try:
+                await super().start()
 
-        me = await self.get_me()
-        print(f"✅ {me.first_name} [Promax Edition] Started Successfully!")
+                me = await self.get_me()
 
-        # Choice 1-B: Initialize the Premium Client for 4GB Support
-        if Config.STRING_SESSION:
-            print("💎 Initializing Premium Client for 4GB Support...")
+                print(
+                    f"✅ {me.first_name} "
+                    "[Promax Edition] Started Successfully!"
+                )
 
-            self.USER = Client(
-                name="Premium_User",
-                session_string=Config.STRING_SESSION,
-                api_id=Config.API_ID,
-                api_hash=Config.API_HASH
-            )
+                # -----------------------------------------
+                # PREMIUM USER SESSION
+                # -----------------------------------------
 
-            await self.USER.start()
-            print("✅ Premium Session Active!")
+                if Config.STRING_SESSION:
+                    print(
+                        "💎 Initializing Premium Client..."
+                    )
+
+                    self.USER = Client(
+                        name="Premium_User",
+                        session_string=Config.STRING_SESSION,
+                        api_id=Config.API_ID,
+                        api_hash=Config.API_HASH,
+                    )
+
+                    await self.USER.start()
+
+                    print(
+                        "✅ Premium Session Active!"
+                    )
+
+                return
+
+            except FloodWait as e:
+                wait_time = int(e.value)
+
+                print(
+                    "⏳ Telegram FloodWait detected."
+                )
+                print(
+                    f"Waiting {wait_time} seconds "
+                    "before trying again..."
+                )
+
+                await asyncio.sleep(
+                    wait_time
+                )
+
+            except Exception:
+                logging.exception(
+                    "Bot startup failed."
+                )
+                raise
 
     async def stop(self, *args):
+        try:
+            if hasattr(self, "USER"):
+                await self.USER.stop()
+        except Exception:
+            logging.exception(
+                "Premium session stop error."
+            )
+
         await super().stop()
 
-        # Ensure the Premium session also disconnects safely
-        if hasattr(self, "USER"):
-            await self.USER.stop()
-
-        print("❌ Bot Stopped.")
+        print(
+            "❌ Bot Stopped."
+        )
 
 
 if __name__ == "__main__":
