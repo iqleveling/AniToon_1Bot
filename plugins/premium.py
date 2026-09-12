@@ -4,21 +4,99 @@ from pyrogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
     ForceReply,
+    LabeledPrice,
 )
 
 from config import Config
 from helper.database import db
+from helper.plans import (
+    PLANS,
+    all_paid_plans,
+    get_plan,
+)
 from helper.utils import humanbytes
 
 
+def is_main_bot(client):
+    return getattr(
+        client,
+        "is_main_bot",
+        False,
+    )
+
+
 # ============================================================
-# USER PLAN
+# PLAN MENU
+# ============================================================
+
+async def send_plan_menu(
+    client,
+    chat_id,
+    target_bot_id,
+):
+    keyboard = []
+
+    for plan in all_paid_plans():
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    (
+                        f"{plan.name} • "
+                        f"{plan.stars} ⭐"
+                    ),
+                    callback_data=(
+                        f"buy:{plan.key}:"
+                        f"{int(target_bot_id)}"
+                    ),
+                )
+            ]
+        )
+
+    keyboard.append(
+        [
+            InlineKeyboardButton(
+                "⬅️ Back",
+                callback_data="start",
+            )
+        ]
+    )
+
+    text = (
+        "💎 **AniToon Premium Plans**\n\n"
+        "Choose a plan for 30 days.\n\n"
+        "🆓 **Free**\n"
+        "⭐ 0 Stars\n"
+        "📊 10 GB/day\n\n"
+        "⚡ **Pro**\n"
+        "⭐ 10 Stars / 30 days\n"
+        "📊 20 GB/day\n\n"
+        "💎 **Premium**\n"
+        "⭐ 20 Stars / 30 days\n"
+        "📊 40 GB/day\n\n"
+        "👑 **Ultra**\n"
+        "⭐ 30 Stars / 30 days\n"
+        "📊 60 GB/day\n\n"
+        "📦 Large files are split into parts "
+        "when necessary."
+    )
+
+    return await client.send_message(
+        chat_id=chat_id,
+        text=text,
+        reply_markup=InlineKeyboardMarkup(
+            keyboard
+        ),
+    )
+
+
+# ============================================================
+# /PLAN
 # ============================================================
 
 @Client.on_message(
     filters.private
     & filters.command(
-        ["myplan", "plan", "status"]
+        ["plan", "myplan", "status"]
     )
 )
 async def user_plan_status(
@@ -26,6 +104,11 @@ async def user_plan_status(
     message: Message,
 ):
     user_id = message.from_user.id
+    bot_id = getattr(
+        client,
+        "bot_id",
+        0,
+    )
 
     if not await db.is_user_exist(
         user_id
@@ -34,56 +117,80 @@ async def user_plan_status(
             user_id
         )
 
-    user_data = await db.get_user_data(
-        user_id
+    subscription = (
+        await db.get_subscription(
+            user_id,
+            bot_id,
+        )
     )
 
-    if not user_data:
-        return await message.reply_text(
-            "❌ Unable to load your account."
+    plan = get_plan(
+        subscription.get(
+            "plan",
+            "free",
         )
+    )
 
     used = await db.get_usage(
-        user_id
+        user_id,
+        bot_id,
     )
 
-    is_premium = user_data.get(
-        "is_premium",
-        False,
+    remaining = max(
+        plan.daily_limit - used,
+        0,
     )
 
-    if is_premium:
-        remaining = "♾️ Unlimited"
-        tier = "PROMAX PREMIUM"
+    expiry = subscription.get(
+        "expires_at"
+    )
+
+    if plan.key == "free":
+        expiry_text = "No expiry"
     else:
-        remaining = humanbytes(
-            max(
-                Config.DAILY_LIMIT - used,
-                0,
-            )
+        expiry_text = expiry.strftime(
+            "%d %b %Y, %H:%M"
         )
-        tier = "FREE TIER"
 
     text = (
-        "📊 **AniToon Subscription**\n\n"
+        "📊 **AniToon Plan Status**\n\n"
         f"👤 **User:** "
         f"`{message.from_user.first_name}`\n"
         f"🆔 **ID:** `{user_id}`\n\n"
-        f"💎 **Tier:** `{tier}`\n"
+        f"💎 **Plan:** {plan.name}\n"
+        f"⭐ **Price:** "
+        f"`{plan.stars} Stars`\n"
         f"📈 **Used Today:** "
         f"`{humanbytes(used)}`\n"
         f"⏳ **Remaining:** "
-        f"`{remaining}`"
+        f"`{humanbytes(remaining)}`\n"
+        f"📅 **Expires:** `{expiry_text}`"
     )
 
-    keyboard = None
-
-    if not is_premium:
+    if (
+        not is_main_bot(client)
+        and Config.MAIN_BOT_USERNAME
+    ):
         keyboard = InlineKeyboardMarkup(
             [
                 [
                     InlineKeyboardButton(
-                        "💎 Upgrade",
+                        "💎 Buy / Upgrade",
+                        url=(
+                            "https://t.me/"
+                            f"{Config.MAIN_BOT_USERNAME}"
+                            f"?start=plans_{bot_id}"
+                        ),
+                    )
+                ]
+            ]
+        )
+    else:
+        keyboard = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        "💎 View Plans",
                         callback_data="upgrade",
                     )
                 ]
@@ -97,8 +204,326 @@ async def user_plan_status(
 
 
 # ============================================================
-# CLONE BUTTON / COMMAND
-# MAIN BOT ONLY
+# UPGRADE BUTTON
+# ============================================================
+
+@Client.on_callback_query(
+    filters.regex("^upgrade$")
+)
+async def upgrade_button(
+    client,
+    callback_query,
+):
+    await callback_query.answer()
+
+    bot_id = getattr(
+        client,
+        "bot_id",
+        0,
+    )
+
+    if not is_main_bot(client):
+        if not Config.MAIN_BOT_USERNAME:
+            return await callback_query.message.edit_text(
+                "❌ **Main bot payment username is not configured.**"
+            )
+
+        return await callback_query.message.edit_text(
+            "💎 **Premium is purchased through AniToon_1Bot.**\n\n"
+            "Tap below to open the official Stars payment page.",
+            reply_markup=InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton(
+                            "⭐ Open AniToon Payments",
+                            url=(
+                                "https://t.me/"
+                                f"{Config.MAIN_BOT_USERNAME}"
+                                f"?start=plans_{bot_id}"
+                            ),
+                        ]
+                    ],
+                    [
+                        InlineKeyboardButton(
+                            "⬅️ Back",
+                            callback_data="start",
+                        )
+                    ],
+                ]
+            ),
+        )
+
+    await send_plan_menu(
+        client,
+        callback_query.from_user.id,
+        bot_id,
+    )
+
+
+# ============================================================
+# BUY PLAN
+# ============================================================
+
+@Client.on_callback_query(
+    filters.regex(
+        r"^buy:(pro|premium|ultra):(\d+)$"
+    )
+)
+async def buy_plan(
+    client,
+    callback_query,
+):
+    await callback_query.answer()
+
+    if not is_main_bot(client):
+        return await callback_query.answer(
+            "Payments must be completed through the main bot.",
+            show_alert=True,
+        )
+
+    match = callback_query.matches[0]
+
+    plan_key = match.group(1)
+    target_bot_id = int(
+        match.group(2)
+    )
+
+    plan = get_plan(
+        plan_key
+    )
+
+    payload = (
+        "anitoon|"
+        f"{plan_key}|"
+        f"{target_bot_id}"
+    )
+
+    try:
+        await client.send_invoice(
+            chat_id=callback_query.from_user.id,
+            title=f"AniToon {plan.name}",
+            description=(
+                f"{plan.name} plan for 30 days. "
+                f"Daily quota: "
+                f"{humanbytes(plan.daily_limit)}."
+            ),
+            payload=payload,
+            provider_token="",
+            currency="XTR",
+            prices=[
+                LabeledPrice(
+                    label=plan.name,
+                    amount=plan.stars,
+                )
+            ],
+        )
+
+    except Exception as e:
+        await client.send_message(
+            callback_query.from_user.id,
+            "❌ **Unable to create payment.**\n\n"
+            f"`{str(e)[:1000]}`"
+        )
+
+
+# ============================================================
+# PRE-CHECKOUT
+# ============================================================
+
+@Client.on_pre_checkout_query()
+async def pre_checkout_handler(
+    client,
+    query,
+):
+    if not is_main_bot(client):
+        return
+
+    try:
+        payload = (
+            query.invoice_payload
+        )
+
+        parts = payload.split(
+            "|"
+        )
+
+        if len(parts) != 3:
+            return await client.answer_pre_checkout_query(
+                query.id,
+                ok=False,
+                error_message="Invalid payment.",
+            )
+
+        prefix = parts[0]
+        plan_key = parts[1]
+
+        if prefix != "anitoon":
+            return await client.answer_pre_checkout_query(
+                query.id,
+                ok=False,
+                error_message="Invalid payment.",
+            )
+
+        plan = get_plan(
+            plan_key
+        )
+
+        if (
+            query.currency != "XTR"
+            or query.total_amount
+            != plan.stars
+        ):
+            return await client.answer_pre_checkout_query(
+                query.id,
+                ok=False,
+                error_message="Payment amount is invalid.",
+            )
+
+        await client.answer_pre_checkout_query(
+            query.id,
+            ok=True,
+        )
+
+    except Exception as e:
+        print(
+            f"Pre-checkout error: {e}"
+        )
+
+        try:
+            await client.answer_pre_checkout_query(
+                query.id,
+                ok=False,
+                error_message="Payment validation failed.",
+            )
+        except Exception:
+            pass
+
+
+# ============================================================
+# SUCCESSFUL PAYMENT
+# ============================================================
+
+@Client.on_message(
+    filters.private
+    & filters.successful_payment
+)
+async def successful_payment(
+    client,
+    message: Message,
+):
+    if not is_main_bot(client):
+        return
+
+    payment = (
+        message.successful_payment
+    )
+
+    try:
+        payload = (
+            payment.invoice_payload
+        )
+
+        parts = payload.split(
+            "|"
+        )
+
+        if len(parts) != 3:
+            return await message.reply_text(
+                "❌ Invalid payment payload."
+            )
+
+        prefix = parts[0]
+        plan_key = parts[1]
+        target_bot_id = int(
+            parts[2]
+        )
+
+        if prefix != "anitoon":
+            return
+
+        plan = get_plan(
+            plan_key
+        )
+
+        if (
+            payment.currency != "XTR"
+            or payment.total_amount
+            != plan.stars
+        ):
+            return await message.reply_text(
+                "❌ Payment verification failed."
+            )
+
+        charge_id = (
+            payment.telegram_payment_charge_id
+        )
+
+        recorded = (
+            await db.record_payment(
+                user_id=message.from_user.id,
+                bot_id=target_bot_id,
+                plan_key=plan_key,
+                stars=payment.total_amount,
+                charge_id=charge_id,
+            )
+        )
+
+        if not recorded:
+            return await message.reply_text(
+                "ℹ️ This payment was already processed."
+            )
+
+        await db.set_plan(
+            user_id=message.from_user.id,
+            bot_id=target_bot_id,
+            plan_key=plan_key,
+            stars_paid=payment.total_amount,
+            payment_id=charge_id,
+        )
+
+        await message.reply_text(
+            "✅ **Payment Successful!**\n\n"
+            f"💎 **Plan:** {plan.name}\n"
+            f"⭐ **Paid:** "
+            f"`{payment.total_amount} Stars`\n"
+            "📅 **Duration:** `30 days`\n\n"
+            "Your new plan is now active."
+        )
+
+    except Exception as e:
+        print(
+            f"Payment processing error: {e}"
+        )
+
+        await message.reply_text(
+            "⚠️ **Payment received, but activation failed.**\n\n"
+            "Please contact `/paysupport`."
+        )
+
+
+# ============================================================
+# PAYMENT SUPPORT
+# ============================================================
+
+@Client.on_message(
+    filters.private
+    & filters.command("paysupport")
+)
+async def payment_support(
+    client,
+    message: Message,
+):
+    await message.reply_text(
+        "💳 **Payment Support**\n\n"
+        "For payment or Premium activation problems, "
+        "contact the AniToon administrator.\n\n"
+        "Please include your Telegram payment receipt "
+        "or payment charge information."
+    )
+
+
+# ============================================================
+# CLONE ENGINE
 # ============================================================
 
 @Client.on_message(
@@ -106,14 +531,10 @@ async def user_plan_status(
     & filters.command("clone")
 )
 async def initiate_clone(
-    client: Client,
+    client,
     message: Message,
 ):
-    if not getattr(
-        client,
-        "is_main_bot",
-        False,
-    ):
+    if not is_main_bot(client):
         return await message.reply_text(
             "❌ Clone creation is available "
             "only from the main AniToon bot."
@@ -133,26 +554,15 @@ async def initiate_clone(
             user_id
         )
 
-    keyboard = InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton(
-                    "❌ Cancel",
-                    callback_data="start",
-                )
-            ]
-        ]
-    )
-
     await message.reply_text(
         "🤖 **Create Your AniToon Clone**\n\n"
-        "1️⃣ Open **@BotFather**.\n"
+        "1️⃣ Open @BotFather.\n"
         "2️⃣ Create a new Telegram bot.\n"
-        "3️⃣ Copy the Bot Token.\n"
+        "3️⃣ Copy its Bot Token.\n"
         "4️⃣ Reply to this message with the token.\n\n"
-        "Your clone will run as a normal Telegram bot "
-        "and use the AniToon features.\n\n"
-        "⚠️ Keep your bot token private.",
+        "Your clone will have the normal AniToon "
+        "user features.\n\n"
+        "⚠️ Never share your BotFather token publicly.",
         reply_markup=ForceReply(
             selective=True
         ),
@@ -160,8 +570,7 @@ async def initiate_clone(
 
 
 # ============================================================
-# PROCESS BOT TOKEN
-# MAIN BOT ONLY
+# PROCESS CLONE TOKEN
 # ============================================================
 
 @Client.on_message(
@@ -170,14 +579,10 @@ async def initiate_clone(
     & filters.text
 )
 async def process_clone_token(
-    client: Client,
+    client,
     message: Message,
 ):
-    if not getattr(
-        client,
-        "is_main_bot",
-        False,
-    ):
+    if not is_main_bot(client):
         return
 
     reply = message.reply_to_message
@@ -195,27 +600,24 @@ async def process_clone_token(
         return
 
     token = message.text.strip()
-    owner_id = message.from_user.id
 
     if (
         ":" not in token
         or len(token) < 20
     ):
         return await message.reply_text(
-            "❌ **Invalid Bot Token**\n\n"
-            "Please send the token generated "
-            "by @BotFather."
+            "❌ **Invalid Bot Token.**"
         )
 
     status = await message.reply_text(
-        "🔄 **Verifying your bot token...**"
+        "🔄 **Verifying BotFather token...**"
     )
 
     try:
         test_client = Client(
             name=(
                 f"verify_"
-                f"{owner_id}"
+                f"{message.from_user.id}"
             ),
             api_id=Config.API_ID,
             api_hash=Config.API_HASH,
@@ -231,10 +633,6 @@ async def process_clone_token(
 
         await test_client.stop()
 
-        # --------------------------------------------------------
-        # CHECK EXISTING CLONE
-        # --------------------------------------------------------
-
         existing = (
             await db.get_clone_by_bot_id(
                 bot_info.id
@@ -246,10 +644,6 @@ async def process_clone_token(
                 "⚠️ **This bot is already connected.**"
             )
 
-        # --------------------------------------------------------
-        # START REAL CLONE
-        # --------------------------------------------------------
-
         if not client.clone_manager:
             return await status.edit_text(
                 "❌ **Clone Manager is unavailable.**"
@@ -257,14 +651,14 @@ async def process_clone_token(
 
         clone = (
             await client.clone_manager.add_clone(
-                owner_id,
+                message.from_user.id,
                 token,
             )
         )
 
         if not clone:
             return await status.edit_text(
-                "❌ **Clone could not be started.**"
+                "❌ **Unable to start the clone.**"
             )
 
         await status.edit_text(
@@ -274,8 +668,10 @@ async def process_clone_token(
             f"🆔 **Bot ID:** "
             f"`{bot_info.id}`\n\n"
             "🟢 **Status:** Online\n\n"
-            "Your clone now runs as an "
-            "AniToon-style bot."
+            "Your clone has the normal AniToon "
+            "features.\n"
+            "The owner dashboard remains exclusive "
+            "to the main AniToon bot."
         )
 
     except Exception as e:
