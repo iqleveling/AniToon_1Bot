@@ -9,12 +9,13 @@ class CloneManager:
         self,
         main_client,
     ):
-        self.main_client = (
-            main_client
-        )
-
+        self.main_client = main_client
         self.clones = {}
 
+
+    # ============================================================
+    # START ONE CLONE
+    # ============================================================
 
     async def start_clone(
         self,
@@ -23,7 +24,7 @@ class CloneManager:
         try:
             client = Client(
                 name=(
-                    f"clone_"
+                    "clone_"
                     f"{bot_token.split(':')[0]}"
                 ),
                 api_id=Config.API_ID,
@@ -45,9 +46,7 @@ class CloneManager:
 
             client.bot_id = me.id
 
-            self.clones[
-                me.id
-            ] = client
+            self.clones[me.id] = client
 
             await db.set_clone_status(
                 me.id,
@@ -55,7 +54,7 @@ class CloneManager:
             )
 
             print(
-                f"✅ Clone started: "
+                "✅ Clone started: "
                 f"@{me.username}"
             )
 
@@ -63,11 +62,16 @@ class CloneManager:
 
         except Exception as e:
             print(
-                f"❌ Clone startup failed: {e}"
+                "❌ Clone startup failed: "
+                f"{e}"
             )
 
             return None
 
+
+    # ============================================================
+    # ADD NEW CLONE
+    # ============================================================
 
     async def add_clone(
         self,
@@ -94,21 +98,46 @@ class CloneManager:
         return client
 
 
+    # ============================================================
+    # START ALL SAVED CLONES
+    # ============================================================
+
     async def start_all(self):
-        cursor = db.get_all_clones()
+        try:
+            cursor = db.get_all_clones()
 
-        async for clone in cursor:
-            token = clone.get(
-                "bot_token"
+            async for clone in cursor:
+                token = clone.get(
+                    "bot_token"
+                )
+
+                if not token:
+                    continue
+
+                bot_id = clone.get(
+                    "bot_id"
+                )
+
+                if (
+                    bot_id
+                    and bot_id in self.clones
+                ):
+                    continue
+
+                await self.start_clone(
+                    token
+                )
+
+        except Exception as e:
+            print(
+                "❌ Error loading clones: "
+                f"{e}"
             )
 
-            if not token:
-                continue
 
-            await self.start_clone(
-                token
-            )
-
+    # ============================================================
+    # STOP ALL CLONES
+    # ============================================================
 
     async def stop_all(self):
         for bot_id, client in list(
@@ -124,7 +153,8 @@ class CloneManager:
 
             except Exception as e:
                 print(
-                    f"Clone stop error: {e}"
+                    "❌ Clone stop error: "
+                    f"{e}"
                 )
 
         self.clones.clear()
