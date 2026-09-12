@@ -1,102 +1,69 @@
-import motor.motor_asyncio
-
 from datetime import datetime, timedelta
+
+import motor.motor_asyncio
 
 from config import Config
 
 
+DB_NAME = "AniToon_Promax_DB"
+DEFAULT_METADATA_NAME = "AniToon Official"
+
+
 class Database:
-    def __init__(
-        self,
-        uri,
-        database_name,
-    ):
-        self._client = (
-            motor.motor_asyncio.AsyncIOMotorClient(
-                uri
-            )
+    def __init__(self, uri: str, database_name: str = DB_NAME):
+        self._client = motor.motor_asyncio.AsyncIOMotorClient(
+            uri,
+            serverSelectionTimeoutMS=5000,
+            connectTimeoutMS=5000,
+            socketTimeoutMS=10000,
         )
-
-        self.db = self._client[
-            database_name
-        ]
-
+        self.db = self._client[database_name]
         self.col = self.db.user
         self.subscriptions = self.db.subscriptions
         self.usage = self.db.usage
         self.payments = self.db.payments
         self.clones = self.db.clones
 
-    # ============================================================
-    # USERS
-    # ============================================================
-
-    def new_user(self, user_id):
+    # ---------- users ----------
+    @staticmethod
+    def new_user(user_id: int) -> dict:
         return {
             "id": int(user_id),
-            "join_date": datetime.now(),
+            "join_date": datetime.utcnow(),
             "thumb": None,
             "caption": None,
+            "audio_name": DEFAULT_METADATA_NAME,
+            "sub_name": DEFAULT_METADATA_NAME,
             "is_banned": False,
         }
 
-    async def add_user(self, user_id):
+    async def add_user(self, user_id: int):
         await self.col.update_one(
-            {
-                "id": int(user_id)
-            },
-            {
-                "$setOnInsert": self.new_user(
-                    user_id
-                )
-            },
+            {"id": int(user_id)},
+            {"$setOnInsert": self.new_user(user_id)},
             upsert=True,
         )
 
-    async def is_user_exist(self, user_id):
-        user = await self.col.find_one(
-            {
-                "id": int(user_id)
-            }
-        )
+    async def is_user_exist(self, user_id: int) -> bool:
+        return await self.col.count_documents({"id": int(user_id)}, limit=1) > 0
 
-        return bool(user)
+    async def get_user_data(self, user_id: int):
+        return await self.col.find_one({"id": int(user_id)})
 
-    async def get_user_data(self, user_id):
-        return await self.col.find_one(
-            {
-                "id": int(user_id)
-            }
-        )
-
-    async def total_users_count(self):
+    async def total_users_count(self) -> int:
         return await self.col.count_documents({})
 
     def get_all_users(self):
         return self.col.find({})
 
-    # ============================================================
-    # PLANS
-    # ============================================================
-
-    async def get_subscription(
-        self,
-        user_id,
-        bot_id,
-    ):
+    # ---------- subscriptions ----------
+    async def get_subscription(self, user_id: int, bot_id: int) -> dict:
         user_id = int(user_id)
         bot_id = int(bot_id)
-
-        subscription = (
-            await self.subscriptions.find_one(
-                {
-                    "user_id": user_id,
-                    "bot_id": bot_id,
-                }
-            )
+        record = await self.subscriptions.find_one(
+            {"user_id": user_id, "bot_id": bot_id}
         )
-
-        if not subscription:
+        if not record:
             return {
                 "user_id": user_id,
                 "bot_id": bot_id,
@@ -105,113 +72,52 @@ class Database:
                 "stars_paid": 0,
             }
 
-        expires_at = subscription.get(
-            "expires_at"
-        )
-
-        plan = subscription.get(
-            "plan",
-            "free",
-        )
-
-        # Automatically downgrade expired paid plans.
-        if (
-            plan != "free"
-            and expires_at
-            and expires_at <= datetime.now()
-        ):
+        plan_key = record.get("plan", "free")
+        expires_at = record.get("expires_at")
+        if plan_key != "free" and expires_at and expires_at <= datetime.utcnow():
             await self.subscriptions.update_one(
-                {
-                    "user_id": user_id,
-                    "bot_id": bot_id,
-                },
-                {
-                    "$set": {
-                        "plan": "free",
-                        "expires_at": None,
-                    }
-                },
+                {"user_id": user_id, "bot_id": bot_id},
+                {"$set": {"plan": "free", "expires_at": None}},
             )
-
-            return {
-                "user_id": user_id,
-                "bot_id": bot_id,
-                "plan": "free",
-                "expires_at": None,
-                "stars_paid": 0,
-            }
-
-        return subscription
+            record["plan"] = "free"
+            record["expires_at"] = None
+            record["stars_paid"] = 0
+        return record
 
     async def set_plan(
         self,
-        user_id,
-        bot_id,
-        plan_key,
-        stars_paid=0,
-        payment_id=None,
+        user_id: int,
+        bot_id: int,
+        plan_key: str,
+        stars_paid: int = 0,
+        payment_id: str | None = None,
     ):
         from helper.plans import get_plan
 
         user_id = int(user_id)
         bot_id = int(bot_id)
-
-        plan = get_plan(
-            plan_key
-        )
-
-        now = datetime.now()
-
-        current = (
-            await self.subscriptions.find_one(
-                {
-                    "user_id": user_id,
-                    "bot_id": bot_id,
-                }
-            )
-        )
+        plan = get_plan(plan_key)
+        now = datetime.utcnow()
 
         if plan_key == "free":
             expires_at = None
-
         else:
-            current_expiry = (
-                current.get(
-                    "expires_at"
-                )
-                if current
-                else None
+            current = await self.subscriptions.find_one(
+                {"user_id": user_id, "bot_id": bot_id}
             )
-
-            if (
-                current_expiry
-                and current_expiry > now
-            ):
-                start_date = current_expiry
-            else:
-                start_date = now
-
-            expires_at = (
-                start_date
-                + timedelta(
-                    days=plan.days
-                )
-            )
+            current_expiry = current.get("expires_at") if current else None
+            start = current_expiry if current_expiry and current_expiry > now else now
+            expires_at = start + timedelta(days=plan.days)
 
         await self.subscriptions.update_one(
-            {
-                "user_id": user_id,
-                "bot_id": bot_id,
-            },
+            {"user_id": user_id, "bot_id": bot_id},
             {
                 "$set": {
                     "user_id": user_id,
                     "bot_id": bot_id,
                     "plan": plan_key,
                     "expires_at": expires_at,
-                    "stars_paid": int(
-                        stars_paid
-                    ),
+                    "stars_paid": int(stars_paid),
                     "payment_id": payment_id,
                     "updated_at": now,
                 }
@@ -219,187 +125,62 @@ class Database:
             upsert=True,
         )
 
-    # ============================================================
-    # DAILY USAGE
-    # ============================================================
-
-    async def get_usage(
-        self,
-        user_id,
-        bot_id,
-    ):
-        today = (
-            datetime.now()
-            .date()
-            .isoformat()
-        )
-
+    # ---------- daily usage ----------
+    async def get_usage(self, user_id: int, bot_id: int) -> int:
+        today = datetime.utcnow().date().isoformat()
         record = await self.usage.find_one(
-            {
-                "user_id": int(user_id),
-                "bot_id": int(bot_id),
-                "date": today,
-            }
+            {"user_id": int(user_id), "bot_id": int(bot_id), "date": today}
         )
+        return int(record.get("bytes", 0)) if record else 0
 
-        if not record:
-            return 0
-
-        return int(
-            record.get(
-                "bytes",
-                0,
-            )
-        )
-
-    async def update_usage(
-        self,
-        user_id,
-        bot_id,
-        bytes_count,
-    ):
-        today = (
-            datetime.now()
-            .date()
-            .isoformat()
-        )
-
+    async def update_usage(self, user_id: int, bot_id: int, bytes_count: int):
+        today = datetime.utcnow().date().isoformat()
         await self.usage.update_one(
-            {
-                "user_id": int(user_id),
-                "bot_id": int(bot_id),
-                "date": today,
-            },
-            {
-                "$inc": {
-                    "bytes": int(
-                        bytes_count
-                    )
-                }
-            },
+            {"user_id": int(user_id), "bot_id": int(bot_id), "date": today},
+            {"$inc": {"bytes": int(bytes_count)}},
             upsert=True,
         )
 
-    # ============================================================
-    # THUMBNAIL
-    # ============================================================
-
-    async def set_thumbnail(
-        self,
-        user_id,
-        file_id,
-    ):
+    # ---------- thumbnail / caption / metadata ----------
+    async def set_thumbnail(self, user_id: int, file_id: str | None):
         await self.col.update_one(
-            {
-                "id": int(user_id)
-            },
-            {
-                "$set": {
-                    "thumb": file_id
-                }
-            },
+            {"id": int(user_id)},
+            {"$set": {"thumb": file_id}},
             upsert=True,
         )
 
-    async def get_thumbnail(
-        self,
-        user_id,
-    ):
-        user = await self.col.find_one(
-            {
-                "id": int(user_id)
-            }
-        )
+    async def get_thumbnail(self, user_id: int):
+        user = await self.col.find_one({"id": int(user_id)}, {"thumb": 1})
+        return user.get("thumb") if user else None
 
-        if not user:
-            return None
-
-        return user.get(
-            "thumb"
-        )
-
-    # ============================================================
-    # CAPTION
-    # ============================================================
-
-    async def set_caption(
-        self,
-        user_id,
-        caption,
-    ):
+    async def set_caption(self, user_id: int, caption: str | None):
         await self.col.update_one(
-            {
-                "id": int(user_id)
-            },
-            {
-                "$set": {
-                    "caption": caption
-                }
-            },
+            {"id": int(user_id)},
+            {"$set": {"caption": caption}},
             upsert=True,
         )
 
-    async def get_caption(
-        self,
-        user_id,
-    ):
-        user = await self.col.find_one(
-            {
-                "id": int(user_id)
-            }
-        )
+    async def get_caption(self, user_id: int):
+        user = await self.col.find_one({"id": int(user_id)}, {"caption": 1})
+        return user.get("caption") if user else None
 
-        if not user:
-            return None
-
-        return user.get(
-            "caption"
-        )
-
-    async def set_audio_name(
-        self,
-        user_id,
-        audio_name,
-    ):
+    async def set_audio_name(self, user_id: int, audio_name: str):
         await self.col.update_one(
-            {
-                "id": int(user_id)
-            },
-            {
-                "$set": {
-                    "audio_name": str(audio_name)
-                }
-            },
+            {"id": int(user_id)},
+            {"$set": {"audio_name": str(audio_name)}},
             upsert=True,
         )
 
-    async def set_subtitle_name(
-        self,
-        user_id,
-        subtitle_name,
-    ):
+    async def set_subtitle_name(self, user_id: int, subtitle_name: str):
         await self.col.update_one(
-            {
-                "id": int(user_id)
-            },
-            {
-                "$set": {
-                    "sub_name": str(subtitle_name)
-                }
-            },
+            {"id": int(user_id)},
+            {"$set": {"sub_name": str(subtitle_name)}},
             upsert=True,
         )
 
-    async def set_metadata(
-        self,
-        user_id,
-        audio_name,
-        subtitle_name,
-    ):
+    async def set_metadata(self, user_id: int, audio_name: str, subtitle_name: str):
         await self.col.update_one(
-            {
-                "id": int(user_id)
-            },
+            {"id": int(user_id)},
             {
                 "$set": {
                     "audio_name": str(audio_name),
@@ -409,74 +190,31 @@ class Database:
             upsert=True,
         )
 
-    # ============================================================
-    # BAN
-    # ============================================================
-
-    async def ban_user(
-        self,
-        user_id,
-    ):
+    # ---------- ban ----------
+    async def ban_user(self, user_id: int):
         await self.col.update_one(
-            {
-                "id": int(user_id)
-            },
-            {
-                "$set": {
-                    "is_banned": True
-                }
-            },
-            upsert=True,
+            {"id": int(user_id)}, {"$set": {"is_banned": True}}, upsert=True
         )
 
-    async def unban_user(
-        self,
-        user_id,
-    ):
+    async def unban_user(self, user_id: int):
         await self.col.update_one(
-            {
-                "id": int(user_id)
-            },
-            {
-                "$set": {
-                    "is_banned": False
-                }
-            },
-            upsert=True,
+            {"id": int(user_id)}, {"$set": {"is_banned": False}}, upsert=True
         )
 
-    # ============================================================
-    # PAYMENTS
-    # ============================================================
-
-    async def payment_exists(
-        self,
-        charge_id,
-    ):
-        result = (
-            await self.payments.find_one(
-                {
-                    "charge_id": charge_id
-                }
-            )
-        )
-
-        return bool(result)
+    # ---------- payments ----------
+    async def payment_exists(self, charge_id: str) -> bool:
+        return bool(await self.payments.find_one({"charge_id": charge_id}, {"_id": 1}))
 
     async def record_payment(
         self,
-        user_id,
-        bot_id,
-        plan_key,
-        stars,
-        charge_id,
-    ):
-        # Prevent duplicate Telegram payment processing.
-        if await self.payment_exists(
-            charge_id
-        ):
+        user_id: int,
+        bot_id: int,
+        plan_key: str,
+        stars: int,
+        charge_id: str,
+    ) -> bool:
+        if await self.payment_exists(charge_id):
             return False
-
         await self.payments.insert_one(
             {
                 "user_id": int(user_id),
@@ -484,28 +222,23 @@ class Database:
                 "plan": plan_key,
                 "stars": int(stars),
                 "charge_id": charge_id,
-                "created_at": datetime.now(),
+                "created_at": datetime.utcnow(),
             }
         )
-
         return True
 
-    # ============================================================
-    # CLONES
-    # ============================================================
-
+    # ---------- clones ----------
     async def add_clone(
         self,
-        owner_id,
-        bot_id,
-        bot_username,
-        bot_name,
-        bot_token,
+        owner_id: int,
+        bot_id: int,
+        bot_username: str | None,
+        bot_name: str | None,
+        bot_token: str,
     ):
+        now = datetime.utcnow()
         await self.clones.update_one(
-            {
-                "bot_id": int(bot_id)
-            },
+            {"bot_id": int(bot_id)},
             {
                 "$set": {
                     "owner_id": int(owner_id),
@@ -514,86 +247,31 @@ class Database:
                     "bot_name": bot_name,
                     "bot_token": bot_token,
                     "status": "online",
-                    "updated_at": datetime.now(),
+                    "updated_at": now,
                 },
-                "$setOnInsert": {
-                    "created_at": datetime.now(),
-                },
+                "$setOnInsert": {"created_at": now},
             },
             upsert=True,
         )
 
-    async def get_clone(
-        self,
-        owner_id,
-    ):
-        return await self.clones.find_one(
-            {
-                "owner_id": int(owner_id)
-            }
-        )
+    async def get_clone(self, owner_id: int):
+        return await self.clones.find_one({"owner_id": int(owner_id)})
 
-    async def get_clone_by_bot_id(
-        self,
-        bot_id,
-    ):
-        return await self.clones.find_one(
-            {
-                "bot_id": int(bot_id)
-            }
-        )
+    async def get_clone_by_bot_id(self, bot_id: int):
+        return await self.clones.find_one({"bot_id": int(bot_id)})
 
     def get_all_clones(self):
-        """
-        Return a Motor cursor directly.
-
-        This is intentionally NOT async because Motor's
-        find() already returns an async cursor.
-        """
         return self.clones.find({})
 
-    async def set_clone_status(
-        self,
-        bot_id,
-        status,
-    ):
+    async def set_clone_status(self, bot_id: int, status: str):
         await self.clones.update_one(
-            {
-                "bot_id": int(bot_id)
-            },
-            {
-                "$set": {
-                    "status": status,
-                    "updated_at": datetime.now(),
-                }
-            },
+            {"bot_id": int(bot_id)},
+            {"$set": {"status": status, "updated_at": datetime.utcnow()}},
         )
 
-    async def remove_clone(
-        self,
-        bot_id,
-    ):
-        await self.clones.delete_one(
-            {
-                "bot_id": int(bot_id)
-            }
-        )
+    async def remove_clone(self, bot_id: int):
+        await self.clones.delete_one({"bot_id": int(bot_id)})
 
 
-# ============================================================
-# DATABASE INSTANCE
-# ============================================================
-
-# IMPORTANT:
-# Config must be imported above.
-# DATABASE_URL comes from Render's environment variables.
-if not Config.DATABASE_URL:
-    raise RuntimeError(
-        "DATABASE_URL is not configured. "
-        "Please set DATABASE_URL in Render Environment Variables."
-    )
-
-db = Database(
-    Config.DATABASE_URL,
-    "AniToon_Promax_DB",
-)
+# DATABASE_URL is already the existing Render environment variable.
+db = Database(Config.DATABASE_URL, DB_NAME)
