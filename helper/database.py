@@ -1,64 +1,102 @@
 import motor.motor_asyncio
+
 from datetime import datetime
+
 from config import Config
 
 
 class Database:
-    def __init__(self, uri, database_name):
-        # Initialize the asynchronous MongoDB client
-        self._client = motor.motor_asyncio.AsyncIOMotorClient(uri)
+    def __init__(
+        self,
+        uri,
+        database_name,
+    ):
+        self._client = (
+            motor.motor_asyncio.AsyncIOMotorClient(
+                uri
+            )
+        )
 
-        self.db = self._client[database_name]
+        self.db = self._client[
+            database_name
+        ]
 
-        # Main users collection
         self.col = self.db.user
 
-        # Clone bot collection
         self.clones = self.db.clones
 
-    def new_user(self, id):
-        """
-        Defines the default schema for a new user.
-        """
+
+    # ============================================================
+    # USER
+    # ============================================================
+
+    def new_user(self, user_id):
         return {
-            "id": int(id),
+            "id": int(user_id),
             "join_date": datetime.now(),
             "thumb": None,
             "caption": None,
             "daily_usage": 0,
-            "last_used": datetime.now().date().isoformat(),
+            "last_used": (
+                datetime.now()
+                .date()
+                .isoformat()
+            ),
             "is_premium": False,
             "is_banned": False,
             "metadata_pref": "AniToon",
         }
 
-    # --- USER CORE LOGIC ---
 
-    async def add_user(self, id):
-        user = self.new_user(id)
-        await self.col.insert_one(user)
+    async def add_user(self, user_id):
+        await self.col.update_one(
+            {"id": int(user_id)},
+            {
+                "$setOnInsert": self.new_user(
+                    user_id
+                )
+            },
+            upsert=True,
+        )
 
-    async def is_user_exist(self, id):
-        user = await self.col.find_one({"id": int(id)})
+
+    async def is_user_exist(self, user_id):
+        user = await self.col.find_one(
+            {"id": int(user_id)}
+        )
+
         return bool(user)
 
-    async def get_user_data(self, id):
-        return await self.col.find_one({"id": int(id)})
 
-    # --- DAILY QUOTA ---
+    async def get_user_data(self, user_id):
+        return await self.col.find_one(
+            {"id": int(user_id)}
+        )
 
-    async def get_usage(self, id):
-        user = await self.col.find_one({"id": int(id)})
+
+    # ============================================================
+    # DAILY USAGE
+    # ============================================================
+
+    async def get_usage(self, user_id):
+        user = await self.col.find_one(
+            {"id": int(user_id)}
+        )
 
         if not user:
             return 0
 
-        today = datetime.now().date().isoformat()
+        today = (
+            datetime.now()
+            .date()
+            .isoformat()
+        )
 
-        # Reset usage when a new day begins
-        if user.get("last_used") != today:
+        if user.get(
+            "last_used"
+        ) != today:
             await self.col.update_one(
-                {"id": int(id)},
+                {"id": int(user_id)},
                 {
                     "$set": {
                         "daily_usage": 0,
@@ -66,31 +104,50 @@ class Database:
                     }
                 },
             )
+
             return 0
 
-        return user.get("daily_usage", 0)
+        return user.get(
+            "daily_usage",
+            0,
+        )
 
-    async def update_usage(self, id, bytes_count):
-        """
-        Adds processed file size to the user's daily usage.
-        """
+
+    async def update_usage(
+        self,
+        user_id,
+        bytes_count,
+    ):
         await self.col.update_one(
-            {"id": int(id)},
+            {"id": int(user_id)},
             {
                 "$inc": {
-                    "daily_usage": int(bytes_count)
+                    "daily_usage": int(
+                        bytes_count
+                    )
                 },
                 "$set": {
-                    "last_used": datetime.now().date().isoformat()
+                    "last_used": (
+                        datetime.now()
+                        .date()
+                        .isoformat()
+                    )
                 },
             },
         )
 
-    # --- THUMBNAIL ---
 
-    async def set_thumbnail(self, id, file_id):
+    # ============================================================
+    # THUMBNAIL
+    # ============================================================
+
+    async def set_thumbnail(
+        self,
+        user_id,
+        file_id,
+    ):
         await self.col.update_one(
-            {"id": int(id)},
+            {"id": int(user_id)},
             {
                 "$set": {
                     "thumb": file_id
@@ -98,15 +155,33 @@ class Database:
             },
         )
 
-    async def get_thumbnail(self, id):
-        user = await self.col.find_one({"id": int(id)})
-        return user.get("thumb") if user else None
 
-    # --- CAPTION ---
+    async def get_thumbnail(
+        self,
+        user_id,
+    ):
+        user = await self.col.find_one(
+            {"id": int(user_id)}
+        )
 
-    async def set_caption(self, id, caption):
+        return (
+            user.get("thumb")
+            if user
+            else None
+        )
+
+
+    # ============================================================
+    # CAPTION
+    # ============================================================
+
+    async def set_caption(
+        self,
+        user_id,
+        caption,
+    ):
         await self.col.update_one(
-            {"id": int(id)},
+            {"id": int(user_id)},
             {
                 "$set": {
                     "caption": caption
@@ -114,15 +189,32 @@ class Database:
             },
         )
 
-    async def get_caption(self, id):
-        user = await self.col.find_one({"id": int(id)})
-        return user.get("caption") if user else None
 
-    # --- BAN / PREMIUM ---
+    async def get_caption(
+        self,
+        user_id,
+    ):
+        user = await self.col.find_one(
+            {"id": int(user_id)}
+        )
 
-    async def ban_user(self, id):
+        return (
+            user.get("caption")
+            if user
+            else None
+        )
+
+
+    # ============================================================
+    # BAN
+    # ============================================================
+
+    async def ban_user(
+        self,
+        user_id,
+    ):
         await self.col.update_one(
-            {"id": int(id)},
+            {"id": int(user_id)},
             {
                 "$set": {
                     "is_banned": True
@@ -130,9 +222,13 @@ class Database:
             },
         )
 
-    async def unban_user(self, id):
+
+    async def unban_user(
+        self,
+        user_id,
+    ):
         await self.col.update_one(
-            {"id": int(id)},
+            {"id": int(user_id)},
             {
                 "$set": {
                     "is_banned": False
@@ -140,50 +236,134 @@ class Database:
             },
         )
 
-    async def set_premium(self, id, status: bool):
+
+    # ============================================================
+    # PREMIUM
+    # ============================================================
+
+    async def set_premium(
+        self,
+        user_id,
+        status,
+    ):
         await self.col.update_one(
-            {"id": int(id)},
+            {"id": int(user_id)},
             {
                 "$set": {
-                    "is_premium": bool(status)
+                    "is_premium": bool(
+                        status
+                    )
                 }
             },
         )
 
-    # --- USER LIST / COUNT ---
+
+    # ============================================================
+    # USERS
+    # ============================================================
 
     async def get_all_users(self):
         return self.col.find({})
 
+
     async def total_users_count(self):
         return await self.col.count_documents({})
 
-    # --- CLONE ENGINE ---
 
-    async def add_clone(self, user_id, bot_token):
+    # ============================================================
+    # CLONES
+    # ============================================================
+
+    async def add_clone(
+        self,
+        owner_id,
+        bot_id,
+        bot_username,
+        bot_name,
+        bot_token,
+    ):
         await self.clones.update_one(
-            {"user_id": int(user_id)},
+            {
+                "bot_id": int(bot_id)
+            },
             {
                 "$set": {
-                    "token": bot_token
-                }
+                    "owner_id": int(owner_id),
+                    "bot_id": int(bot_id),
+                    "bot_username": bot_username,
+                    "bot_name": bot_name,
+                    "bot_token": bot_token,
+                    "status": "online",
+                    "updated_at": datetime.now(),
+                },
+                "$setOnInsert": {
+                    "created_at": datetime.now(),
+                },
             },
             upsert=True,
         )
 
-    async def get_clone(self, user_id):
+
+    async def get_clone(
+        self,
+        owner_id,
+    ):
         return await self.clones.find_one(
-            {"user_id": int(user_id)}
+            {
+                "owner_id": int(owner_id)
+            }
         )
 
-    async def remove_clone(self, user_id):
+
+    async def get_clone_by_bot_id(
+        self,
+        bot_id,
+    ):
+        return await self.clones.find_one(
+            {
+                "bot_id": int(bot_id)
+            }
+        )
+
+
+    async def get_all_clones(self):
+        return self.clones.find({})
+
+
+    async def set_clone_status(
+        self,
+        bot_id,
+        status,
+    ):
+        await self.clones.update_one(
+            {
+                "bot_id": int(bot_id)
+            },
+            {
+                "$set": {
+                    "status": status,
+                    "updated_at": datetime.now(),
+                }
+            },
+        )
+
+
+    async def remove_clone(
+        self,
+        bot_id,
+    ):
         await self.clones.delete_one(
-            {"user_id": int(user_id)}
+            {
+                "bot_id": int(bot_id)
+            }
         )
 
 
-# Initialize the database
+# ============================================================
+# DATABASE INSTANCE
+# ============================================================
+
 db = Database(
     Config.DATABASE_URL,
-    "AniToon_Promax_DB"
+    "AniToon_Promax_DB",
 )
