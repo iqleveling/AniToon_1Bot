@@ -72,7 +72,7 @@ class Database:
     async def total_users_count(self):
         return await self.col.count_documents({})
 
-    async def get_all_users(self):
+    def get_all_users(self):
         return self.col.find({})
 
     # ============================================================
@@ -354,6 +354,59 @@ class Database:
 
         return user.get(
             "caption"
+        )
+
+    async def set_audio_name(
+        self,
+        user_id,
+        audio_name,
+    ):
+        await self.col.update_one(
+            {
+                "id": int(user_id)
+            },
+            {
+                "$set": {
+                    "audio_name": str(audio_name)
+                }
+            },
+            upsert=True,
+        )
+
+    async def set_subtitle_name(
+        self,
+        user_id,
+        subtitle_name,
+    ):
+        await self.col.update_one(
+            {
+                "id": int(user_id)
+            },
+            {
+                "$set": {
+                    "sub_name": str(subtitle_name)
+                }
+            },
+            upsert=True,
+        )
+
+    async def set_metadata(
+        self,
+        user_id,
+        audio_name,
+        subtitle_name,
+    ):
+        await self.col.update_one(
+            {
+                "id": int(user_id)
+            },
+            {
+                "$set": {
+                    "audio_name": str(audio_name),
+                    "sub_name": str(subtitle_name),
+                }
+            },
+            upsert=True,
         )
 
     # ============================================================
