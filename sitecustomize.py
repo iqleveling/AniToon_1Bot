@@ -1,6 +1,17 @@
-"""Startup performance tuning for the AniToon deployment."""
+"""Early startup performance tuning for the AniToon deployment."""
 
+import asyncio
 import os
+
+
+def _install_uvloop():
+    """Use uvloop when available; safely keep asyncio on unsupported hosts."""
+    try:
+        import uvloop
+        uvloop.install()
+    except Exception:
+        # Windows or an unavailable optional runtime must not prevent startup.
+        pass
 
 
 def _patch_pyrogram_transmissions():
@@ -25,4 +36,5 @@ def _patch_pyrogram_transmissions():
     Client.__init__ = fast_init
 
 
+_install_uvloop()
 _patch_pyrogram_transmissions()
