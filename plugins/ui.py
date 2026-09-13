@@ -17,6 +17,17 @@ def main_menu(is_main_bot: bool = True):
     return InlineKeyboardMarkup(rows)
 
 
+def force_sub_menu(links):
+    """Build the four required channel buttons and a Check & Retry button."""
+    rows = []
+    labels = ["📢 Channel 1", "📢 Channel 2", "📢 Channel 3", "📢 Channel 4"]
+    for index, link in enumerate(links[:4]):
+        if link:
+            rows.append([InlineKeyboardButton(labels[index], url=link)])
+    rows.append([InlineKeyboardButton("🔄 Check & Retry", callback_data="check_fsub")])
+    return InlineKeyboardMarkup(rows)
+
+
 def settings_menu():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📝 Caption", callback_data="settings_caption"),
