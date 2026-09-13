@@ -10,17 +10,12 @@ def force_sub_menu():
     ]
     rows = []
     for index, link in enumerate(links[:3], 1):
-        rows.append([
-            InlineKeyboardButton(f"📢 Channel {index}", url=link)
-        ])
-    rows.append([
-        InlineKeyboardButton("🔄 Check & Retry", callback_data="check_force_sub")
-    ])
+        rows.append([InlineKeyboardButton(f"📢 Channel {index}", url=link)])
+    rows.append([InlineKeyboardButton("🔄 Check & Retry", callback_data="check_force_sub")])
     return InlineKeyboardMarkup(rows)
 
 
 def main_menu(is_main_bot: bool = True):
-    """Compact start dashboard: only the requested core actions."""
     rows = [
         [
             InlineKeyboardButton("🛠 Help", callback_data="help"),
@@ -32,9 +27,7 @@ def main_menu(is_main_bot: bool = True):
         ],
     ]
     if is_main_bot:
-        rows.append([
-            InlineKeyboardButton("🤖 Create Your Own Clone Bot", callback_data="create_clone")
-        ])
+        rows.append([InlineKeyboardButton("🤖 Create Your Own Clone Bot", callback_data="create_clone")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -71,16 +64,23 @@ def thumbnail_menu():
 
 
 def file_action_menu(job_id: str):
+    """The only actions shown after a file finishes downloading."""
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("✏️ Custom Rename", callback_data=f"job:rename:{job_id}"),
-            InlineKeyboardButton("🤖 Auto Rename", callback_data=f"job:auto:{job_id}"),
-        ],
-        [
-            InlineKeyboardButton("🔄 Convert", callback_data=f"job:convert:{job_id}"),
-            InlineKeyboardButton("🛠 Advanced Rename", callback_data=f"job:advanced:{job_id}"),
+            InlineKeyboardButton("✏️ Rename", callback_data=f"job:rename:{job_id}"),
+            InlineKeyboardButton("🛠 Advanced", callback_data=f"job:advanced:{job_id}"),
         ],
         [InlineKeyboardButton("❌ Cancel", callback_data=f"job:cancel:{job_id}")],
+    ])
+
+
+def rename_format_menu(job_id: str):
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("📄 Document", callback_data=f"job:renameformat:{job_id}:document"),
+            InlineKeyboardButton("🎬 Video", callback_data=f"job:renameformat:{job_id}:video"),
+        ],
+        [InlineKeyboardButton("🔙 Back", callback_data=f"job:back:{job_id}")],
     ])
 
 
@@ -113,11 +113,16 @@ def convert_menu(job_id: str):
 
 
 def advanced_menu(job_id: str):
+    """Paid-only advanced media tools."""
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📝 Rename File", callback_data=f"job:advancedfile:{job_id}")],
-        [InlineKeyboardButton("🎵 Rename Audio Tracks", callback_data=f"job:audio:{job_id}")],
-        [InlineKeyboardButton("📜 Rename Subtitle Tracks", callback_data=f"job:subtitle:{job_id}")],
-        [InlineKeyboardButton("✅ Process & Upload", callback_data=f"job:finishadvanced:{job_id}")],
+        [InlineKeyboardButton("ℹ️ Media Info", callback_data=f"job:advinfo:{job_id}")],
+        [InlineKeyboardButton("🎵 Extract All Audio", callback_data=f"job:extractaudio:{job_id}")],
+        [InlineKeyboardButton("💬 Extract All Subtitle", callback_data=f"job:extractsubtitle:{job_id}")],
+        [
+            InlineKeyboardButton("➕ Add Audio", callback_data=f"job:addaudio:{job_id}"),
+            InlineKeyboardButton("➕ Add Subtitle", callback_data=f"job:addsubtitle:{job_id}"),
+        ],
+        [InlineKeyboardButton("✂️ Trim Video", callback_data=f"job:trim:{job_id}")],
         [InlineKeyboardButton("🔙 Back", callback_data=f"job:back:{job_id}")],
     ])
 
