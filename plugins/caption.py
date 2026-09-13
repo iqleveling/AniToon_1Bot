@@ -188,7 +188,9 @@ async def cb_help_caption(
 ):
     await callback_query.answer()
 
-    await callback_query.message.edit_text(
+    from plugins.ui import edit_callback_message
+    await edit_callback_message(
+        callback_query,
         "💡 **Custom Caption Help**\n\n"
         "**Available placeholders:**\n\n"
         "• `{filename}` — File name\n"
