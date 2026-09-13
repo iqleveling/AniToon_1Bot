@@ -1,10 +1,6 @@
 from __future__ import annotations
 
-import os
-
-from pyrogram import Client, filters
-from pyrogram.errors import StopPropagation
-from pyrogram.types import ForceReply
+from pyrogram import Client, StopPropagation, filters
 
 from helper.job_state import jobs
 from plugins.rename import _ask_name
@@ -42,7 +38,10 @@ async def rename_entry_fix(client, cb):
     raise StopPropagation
 
 
-@Client.on_callback_query(filters.regex(r"^job:renameformat:([0-9a-f]+):(document|video)$"), group=-1000)
+@Client.on_callback_query(
+    filters.regex(r"^job:renameformat:([0-9a-f]+):(document|video)$"),
+    group=-1000,
+)
 async def rename_format_fix(client, cb):
     job = await jobs.get(cb.matches[0].group(1))
     if not job:
@@ -51,20 +50,40 @@ async def rename_format_fix(client, cb):
 
     mode = cb.matches[0].group(2)
     await cb.answer()
-    await jobs.update(job.job_id, extra={**job.extra, "rename_output_mode": mode})
+    await jobs.update(
+        job.job_id,
+        extra={**job.extra, "rename_output_mode": mode},
+    )
 
     if mode == "video":
-        job.mime_type = VIDEO_MIME.get("mp4", "video/mp4")
-        prompt = "🎬 **Rename as Video**\n\nEnter the new filename.\nThe file will be sent as a video."
+        job.mime_type = VIDEO_MIME["mp4"]
+        prompt = (
+            "🎬 **Rename as Video**\n\n"
+            "Enter the new filename.\n"
+            "The file will be sent as a video."
+        )
     else:
         job.mime_type = "application/octet-stream"
-        prompt = "📄 **Rename as Document**\n\nEnter the new filename.\nThe file will be sent as a document."
+        prompt = (
+            "📄 **Rename as Document**\n\n"
+            "Enter the new filename.\n"
+            "The file will be sent as a document."
+        )
 
-    await _ask_name(client, job.user_id, prompt, job.job_id, "custom_name")
+    await _ask_name(
+        client,
+        job.user_id,
+        prompt,
+        job.job_id,
+        "custom_name",
+    )
     raise StopPropagation
 
 
-@Client.on_callback_query(filters.regex(r"^job:format:([0-9a-f]+):(mp4|mkv|webm|mov|mp3|m4a)$"), group=-1000)
+@Client.on_callback_query(
+    filters.regex(r"^job:format:([0-9a-f]+):(mp4|mkv|webm|mov|mp3|m4a)$"),
+    group=-1000,
+)
 async def convert_entry_fix(client, cb):
     job = await jobs.get(cb.matches[0].group(1))
     if not job:
@@ -74,6 +93,7 @@ async def convert_entry_fix(client, cb):
     fmt = cb.matches[0].group(2)
     await cb.answer()
     job.output_ext = fmt
+
     if fmt in VIDEO_MIME:
         job.mime_type = VIDEO_MIME[fmt]
     elif fmt in AUDIO_MIME:
@@ -84,13 +104,10 @@ async def convert_entry_fix(client, cb):
     await _ask_name(
         client,
         job.user_id,
-        f"🔄 **Convert to {fmt.upper()}**\n\nEnter the output filename.\nThe `.{fmt}` extension will be used.",
+        f"🔄 **Convert to {fmt.upper()}**\n\n"
+        f"Enter the output filename.\n"
+        f"The `.{fmt}` extension will be used.",
         job.job_id,
         "convert_name",
     )
-    raise StopPropagation
-
-
-@Client.on_callback_query(filters.regex(r"^job:renameformat:([0-9a-f]+):document$"), group=-1001)
-async def _unused_document_guard(client, cb):
     raise StopPropagation
