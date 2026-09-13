@@ -50,3 +50,9 @@ class Config:
     START_PIC = os.getenv(
         "START_PIC", ""
     ).strip()
+
+    # Progress-bar characters used by helper.utils.progress_for_pyrogram.
+    # Keep these configurable, but always provide safe defaults so a missing
+    # Render environment variable cannot break Telegram downloads.
+    COMPLETED_STR = os.getenv("COMPLETED_STR", "▰")
+    REMAINING_STR = os.getenv("REMAINING_STR", "▱")
