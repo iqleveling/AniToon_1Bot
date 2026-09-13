@@ -50,42 +50,61 @@ async def _download_verified(
     status: Message,
     expected_size: int,
 ) -> int:
-    """Download into a temporary Telegram-managed filename, then atomically move it.
+    """Download to a directory chosen by Pyrogram, then move the real result.
 
-    Using a temporary filename prevents another handler or an interrupted Pyrogram
-    transfer from ever leaving the final job path in a half-created state.
+    Passing the work directory instead of a hand-built final filename is important:
+    Pyrogram owns the temporary/partial download path and atomically finalizes it.
+    We only rename the completed file after Pyrogram returns successfully.
     """
     last_error = None
     os.makedirs(work_dir, exist_ok=True)
 
     for attempt in range(1, 4):
-        temp_path = os.path.join(work_dir, f".anitoon_download_{uuid.uuid4().hex}.part")
         try:
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
-            if os.path.exists(final_path):
-                os.remove(final_path)
+            # Remove only previous transfer artifacts. Never remove unrelated job data.
+            for entry in os.listdir(work_dir):
+                if entry.startswith(".anitoon_download_") or entry == os.path.basename(final_path):
+                    try:
+                        path = os.path.join(work_dir, entry)
+                        if os.path.isfile(path):
+                            os.remove(path)
+                    except OSError:
+                        pass
 
             await status.edit_text(
                 "📥 **AniToon: Downloading...**"
                 + (f"\n\nRetry `{attempt}/3`" if attempt > 1 else "")
             )
 
-            # Pyrogram writes the transfer to this unique path. Once download_media
-            # returns successfully, move it to the job's final input filename.
+            # Let Pyrogram determine its own completed filename. This avoids the
+            # intermittent 'No such file or directory' seen with a forced path.
             result = await client.download_media(
                 message=message,
-                file_name=temp_path,
+                file_name=work_dir,
                 progress=progress_for_pyrogram,
                 progress_args=("📥 Downloading", status, time.time()),
             )
 
-            downloaded_path = result if isinstance(result, str) else temp_path
-            if not os.path.isfile(downloaded_path):
+            candidates = []
+            if isinstance(result, str) and os.path.isfile(result):
+                candidates.append(result)
+
+            # If a Pyrogram version returns None, discover the completed file in
+            # the job directory. Ignore partial transfer files.
+            if not candidates:
+                for entry in os.listdir(work_dir):
+                    if entry.startswith(".anitoon_download_") or entry.endswith(".part"):
+                        continue
+                    path = os.path.join(work_dir, entry)
+                    if os.path.isfile(path):
+                        candidates.append(path)
+
+            if not candidates:
                 raise RuntimeError(
-                    "Telegram download completed but the local file was not created"
+                    "Telegram download completed but no local file was found"
                 )
 
+            downloaded_path = candidates[0]
             actual = os.path.getsize(downloaded_path)
             if expected_size and actual != expected_size:
                 raise RuntimeError(
@@ -106,12 +125,18 @@ async def _download_verified(
             raise
         except Exception as exc:
             last_error = exc
-            for candidate in (temp_path, final_path):
-                try:
-                    if os.path.exists(candidate):
-                        os.remove(candidate)
-                except OSError:
-                    pass
+            # Clean the transfer result before retrying.
+            for entry in os.listdir(work_dir):
+                if entry.startswith(".anitoon_download_") or entry.endswith(".part"):
+                    try:
+                        os.remove(os.path.join(work_dir, entry))
+                    except OSError:
+                        pass
+            try:
+                if os.path.isfile(final_path):
+                    os.remove(final_path)
+            except OSError:
+                pass
             if attempt < 3:
                 await asyncio.sleep(1)
 
