@@ -243,7 +243,8 @@ async def upgrade_button(
                 "❌ **Main payment bot is not configured.**",
             )
 
-        await callback_query.message.edit_text(
+        await edit_callback_message(
+            callback_query,
             "💎 **AniToon Premium**\n\n"
             "Premium purchases are handled by "
             "**AniToon_1Bot**.\n\n"
