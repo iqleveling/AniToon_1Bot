@@ -18,7 +18,7 @@ from plugins.ui import main_menu
     group=-2000,
 )
 async def replace_waiting_file_job(client, message):
-    """If the user sends a new file while answering a rename prompt, replace the old job."""
+    """Clear an abandoned rename/convert prompt and let the normal intake handle the new file."""
     job = await jobs.get_user_job(message.from_user.id)
     if not job or job.selected_action not in {"rename_format", "custom_name", "convert_name"}:
         return
@@ -26,8 +26,9 @@ async def replace_waiting_file_job(client, message):
     shutil.rmtree(job.work_dir, ignore_errors=True)
     await jobs.remove(job.job_id)
     await message.reply_text("🔄 **Previous rename request cleared. Starting the new file...**")
-    await _download_job(client, message)
-    raise StopPropagation
+    # Do NOT call _download_job here. Allow the high-priority verified intake
+    # handler in file_action_fix.py to process this same message exactly once.
+    return
 
 
 @Client.on_message(
@@ -70,8 +71,6 @@ async def clean_start(client, message):
     text = (
         "🔥 **Welcome to AniToon Bot** 🔥\n\n"
         f"👋 Hello **{message.from_user.first_name}**!\n\n"
-        "🎬 **Rename • Convert • Process**\n"
-        "Send me a video, document or audio file and choose what you want to do.\n\n"
         f"💎 **Plan:** {plan_name}\n"
         f"📊 **Used today:** `{humanbytes(used)}`\n"
         f"📦 **Remaining:** `{humanbytes(remaining)}`\n\n"
@@ -136,8 +135,6 @@ async def start_from_button(client, callback_query):
     text = (
         "🔥 **Welcome to AniToon Bot** 🔥\n\n"
         f"👋 Hello **{user.first_name}**!\n\n"
-        "🎬 **Rename • Convert • Process**\n"
-        "Send me a video, document or audio file and choose what you want to do.\n\n"
         f"💎 **Plan:** {plan_name}\n"
         f"📊 **Used today:** `{humanbytes(used)}`\n"
         f"📦 **Remaining:** `{humanbytes(remaining)}`\n\n"
