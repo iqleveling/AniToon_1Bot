@@ -472,9 +472,18 @@ async def pre_checkout_handler(
 # SUCCESSFUL PAYMENT
 # ============================================================
 
+def _successful_payment_filter(_, __, message):
+    return bool(getattr(message, "successful_payment", None))
+
+
+SUCCESSFUL_PAYMENT_FILTER = filters.create(
+    _successful_payment_filter
+)
+
+
 @Client.on_message(
     filters.private
-    & filters.incoming
+    & SUCCESSFUL_PAYMENT_FILTER
 )
 async def payment_message_handler(
     client,
