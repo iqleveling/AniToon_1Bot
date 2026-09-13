@@ -1,14 +1,33 @@
 """Clean AniToon /start experience and start-page actions."""
 
-from pyrogram import Client, StopPropagation, filters
-from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+import shutil
 
-from config import Config
+from pyrogram import Client, StopPropagation, filters
+
 from helper.database import db
+from helper.job_state import jobs
 from helper.plans import get_plan
 from helper.utils import humanbytes
+from plugins.rename import _download_job
 from plugins.start import get_force_sub_status, make_force_sub_text, make_force_sub_keyboard
 from plugins.ui import main_menu
+
+
+@Client.on_message(
+    filters.private & (filters.document | filters.video | filters.audio),
+    group=-2000,
+)
+async def replace_waiting_file_job(client, message):
+    """If the user sends a new file while answering a rename prompt, replace the old job."""
+    job = await jobs.get_user_job(message.from_user.id)
+    if not job or job.selected_action not in {"rename_format", "custom_name", "convert_name"}:
+        return
+
+    shutil.rmtree(job.work_dir, ignore_errors=True)
+    await jobs.remove(job.job_id)
+    await message.reply_text("🔄 **Previous rename request cleared. Starting the new file...**")
+    await _download_job(client, message)
+    raise StopPropagation
 
 
 @Client.on_message(
