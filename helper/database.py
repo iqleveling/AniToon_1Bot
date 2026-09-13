@@ -23,6 +23,7 @@ class Database:
         self.usage = self.db.usage
         self.payments = self.db.payments
         self.clones = self.db.clones
+        self.force_sub_requests = self.db.force_sub_requests
 
     # ---------- users ----------
     @staticmethod
@@ -139,6 +140,35 @@ class Database:
             {"user_id": int(user_id), "bot_id": int(bot_id), "date": today},
             {"$inc": {"bytes": int(bytes_count)}},
             upsert=True,
+        )
+
+    # ---------- force-sub join requests ----------
+    async def mark_force_sub_request(self, user_id: int, chat_id: int):
+        """Remember that a user has submitted a join request to a required channel."""
+        await self.force_sub_requests.update_one(
+            {"user_id": int(user_id), "chat_id": int(chat_id)},
+            {
+                "$set": {
+                    "user_id": int(user_id),
+                    "chat_id": int(chat_id),
+                    "requested_at": datetime.utcnow(),
+                }
+            },
+            upsert=True,
+        )
+
+    async def has_force_sub_request(self, user_id: int, chat_id: int) -> bool:
+        """Return True when the user has a recorded pending join request."""
+        return bool(
+            await self.force_sub_requests.find_one(
+                {"user_id": int(user_id), "chat_id": int(chat_id)},
+                {"_id": 1},
+            )
+        )
+
+    async def clear_force_sub_request(self, user_id: int, chat_id: int):
+        await self.force_sub_requests.delete_one(
+            {"user_id": int(user_id), "chat_id": int(chat_id)}
         )
 
     # ---------- thumbnail / caption / metadata ----------
