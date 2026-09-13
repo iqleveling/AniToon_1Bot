@@ -1,183 +1,281 @@
+import asyncio
+import logging
+
 from pyrogram import Client, filters
 from pyrogram.types import (
-    InlineKeyboardMarkup,
     InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
 )
 
 from config import Config
+from helper.database import db
+from helper.plans import get_plan, all_paid_plans
+from helper.utils import humanbytes
+from plugins.ui import main_menu
+
+log = logging.getLogger(__name__)
 
 
 # ============================================================
-# FORCE-SUB CHANNEL CONFIG
+# FORCE SUBSCRIBE CHANNELS
 # ============================================================
 
-def get_force_sub_channels():
+FORCE_SUB_CHANNELS = [
+    {
+        "name": "Channel 1",
+        "chat": "@Anitoon_edit",
+        "link": "https://t.me/Anitoon_edit",
+    },
+    {
+        "name": "Channel 2",
+        "chat": "@anitoons_ani",
+        "link": "https://t.me/anitoons_ani",
+    },
+    {
+        "name": "Channel 3",
+        "chat": "@mangauniverse_ani",
+        "link": "https://t.me/mangauniverse_ani",
+    },
+    {
+        "name": "Channel 4",
+        "chat": -1002732670564,
+        "link": "",  # Put your private-channel invite link here.
+    },
+]
+
+
+# ============================================================
+# STATUS NORMALIZER
+# ============================================================
+
+def _normalize_status(status) -> str:
     """
-    Returns:
-        [
-            {
-                "chat": "@channel",
-                "name": "Channel 1",
-                "link": "https://t.me/channel",
-            },
-            ...
-        ]
+    Pyrogram status can be represented differently depending
+    on the returned object/version. Normalize everything to a
+    simple lowercase string.
     """
 
-    raw_channels = [
-        item.strip()
-        for item in Config.FORCE_SUB.split(",")
-        if item.strip()
-    ]
+    if status is None:
+        return ""
 
-    raw_links = [
-        item.strip()
-        for item in Config.FORCE_SUB_LINKS.split(",")
-        if item.strip()
-    ]
+    # Plain string
+    if isinstance(status, str):
+        return status.strip().lower()
 
-    # Your current four required channels.
-    default_names = [
-        "Channel 1",
-        "Channel 2",
-        "Channel 3",
-        "Channel 4",
-    ]
+    # Enum-like object
+    value = getattr(status, "value", None)
+    if value is not None:
+        return str(value).strip().lower()
 
-    channels = []
+    name = getattr(status, "name", None)
+    if name is not None:
+        return str(name).strip().lower()
 
-    for index, chat in enumerate(raw_channels[:4]):
-        link = (
-            raw_links[index]
-            if index < len(raw_links)
-            else ""
-        )
-
-        # Public username automatically gets a Telegram URL.
-        if (
-            not link
-            and chat.startswith("@")
-        ):
-            link = (
-                f"https://t.me/"
-                f"{chat.lstrip('@')}"
-            )
-
-        channels.append(
-            {
-                "chat": chat,
-                "name": (
-                    default_names[index]
-                    if index < len(default_names)
-                    else f"Channel {index + 1}"
-                ),
-                "link": link,
-            }
-        )
-
-    return channels
+    return str(status).strip().lower()
 
 
-async def check_channel_membership(
+# ============================================================
+# CHECK ONE CHANNEL
+# ============================================================
+
+async def _check_one_channel(
     client: Client,
     user_id: int,
-    chat,
-) -> bool:
+    channel: dict,
+):
     """
-    Returns True when the user is considered
-    joined/member of the channel.
-
-    Bot must be an administrator in the
-    required channels for reliable checks.
+    Returns:
+        True   -> definitely joined
+        False  -> definitely not joined
+        None   -> bot could not verify channel
     """
 
     try:
         member = await client.get_chat_member(
-            chat_id=chat,
+            chat_id=channel["chat"],
             user_id=user_id,
         )
 
-        status = getattr(
-            member,
-            "status",
-            "",
+        status = _normalize_status(
+            getattr(member, "status", None)
         )
 
-        # These statuses mean the user has access.
-        return status in {
+        log.info(
+            "Force-sub: user=%s channel=%s status=%s",
+            user_id,
+            channel["name"],
+            status,
+        )
+
+        # Joined/allowed states.
+        if status in {
             "owner",
             "administrator",
             "member",
             "restricted",
-        }
+        }:
+            return True
+
+        # Definitely not joined.
+        if status in {
+            "left",
+            "kicked",
+            "banned",
+        }:
+            return False
+
+        # Unknown status should not silently be treated as
+        # "not joined".
+        log.warning(
+            "Force-sub unknown status: user=%s channel=%s status=%r",
+            user_id,
+            channel["name"],
+            status,
+        )
+        return None
 
     except Exception:
-        # Private/deleted/inaccessible channel:
-        # treat as not verified.
-        return False
+        log.exception(
+            "Force-sub verification failed: user=%s channel=%s chat=%s",
+            user_id,
+            channel["name"],
+            channel["chat"],
+        )
+        return None
 
 
-async def get_membership_status(
+# ============================================================
+# CHECK ALL 4 CHANNELS
+# ============================================================
+
+async def get_force_sub_status(
     client: Client,
     user_id: int,
 ):
     """
     Returns:
-        joined_channels,
-        missing_channels
+        joined_count,
+        missing_channels,
+        failed_channels
     """
 
-    channels = get_force_sub_channels()
+    results = await asyncio.gather(
+        *[
+            _check_one_channel(
+                client,
+                user_id,
+                channel,
+            )
+            for channel in FORCE_SUB_CHANNELS
+        ]
+    )
 
-    joined = []
-    missing = []
+    joined_count = 0
+    missing_channels = []
+    failed_channels = []
 
-    for channel in channels:
-        is_joined = await check_channel_membership(
-            client,
-            user_id,
-            channel["chat"],
+    for channel, result in zip(
+        FORCE_SUB_CHANNELS,
+        results,
+    ):
+        if result is True:
+            joined_count += 1
+
+        elif result is False:
+            missing_channels.append(channel)
+
+        else:
+            failed_channels.append(channel)
+
+    return (
+        joined_count,
+        missing_channels,
+        failed_channels,
+    )
+
+
+# ============================================================
+# FORCE SUBSCRIBE TEXT
+# ============================================================
+
+def make_force_sub_text(
+    joined_count: int,
+    missing_count: int,
+    failed_count: int = 0,
+):
+    total = len(FORCE_SUB_CHANNELS)
+    remaining = missing_count + failed_count
+
+    text = (
+        "🔒 **Join Required Channels**\n\n"
+        "To use AniToon, please join all required channels.\n\n"
+        f"📊 **Joined:** `{joined_count}/{total}`\n"
+        f"❗ **Remaining:** `{remaining}`\n"
+    )
+
+    if failed_count:
+        text += (
+            "\n⚠️ I could not verify one or more channels. "
+            "Please try again in a moment."
         )
 
-        if is_joined:
-            joined.append(channel)
-        else:
-            missing.append(channel)
+    text += (
+        "\n\n"
+        "Tap the remaining channel buttons below, "
+        "join them, then press **🔄 Check & Retry**."
+    )
 
-    return joined, missing
+    return text
 
 
-def build_force_sub_keyboard(
+# ============================================================
+# FORCE SUBSCRIBE KEYBOARD
+# ============================================================
+
+def make_force_sub_keyboard(
     missing_channels,
+    failed_channels=None,
 ):
     """
-    IMPORTANT:
-    Only unjoined channels are displayed.
+    ONLY unjoined/unverified channels are displayed.
+
     Check & Retry is always at the bottom.
     """
 
+    failed_channels = failed_channels or []
+
     rows = []
 
+    # Display unjoined channels first.
     for channel in missing_channels:
-        link = channel["link"]
+        if channel["link"]:
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        f"📢 {channel['name']}",
+                        url=channel["link"],
+                    )
+                ]
+            )
 
-        # Do not create a broken button.
-        if not link:
-            continue
-
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    text=f"📢 {channel['name']}",
-                    url=link,
-                )
-            ]
-        )
+    # If a channel could not be checked and has a link,
+    # show it so the user can open it and retry.
+    for channel in failed_channels:
+        if channel not in missing_channels and channel["link"]:
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        f"📢 {channel['name']}",
+                        url=channel["link"],
+                    )
+                ]
+            )
 
     rows.append(
         [
             InlineKeyboardButton(
-                text="🔄 Check & Retry",
+                "🔄 Check & Retry",
                 callback_data="check_force_sub",
             )
         ]
@@ -186,104 +284,48 @@ def build_force_sub_keyboard(
     return InlineKeyboardMarkup(rows)
 
 
-def force_sub_text(
-    joined_count: int,
-    total_count: int,
-):
-    remaining = max(
-        total_count - joined_count,
-        0,
-    )
+# ============================================================
+# SHOW FORCE SUB MESSAGE
+# ============================================================
 
-    return (
-        "🔒 **Join Required Channels**\n\n"
-        "Please join all required channels "
-        "below to use AniToon.\n\n"
-        f"📊 **Joined:** {joined_count}/{total_count}\n"
-        f"❗ **Remaining:** {remaining}\n\n"
-        "After joining the remaining channels, "
-        "press **🔄 Check & Retry**."
-    )
-
-
-async def show_force_sub(
+async def send_force_sub_message(
     client: Client,
-    message_or_query,
+    message: Message,
 ):
-    """
-    Checks membership and shows only missing
-    channels.
-    """
+    (
+        joined_count,
+        missing_channels,
+        failed_channels,
+    ) = await get_force_sub_status(
+        client,
+        message.from_user.id,
+    )
 
-    if hasattr(
-        message_or_query,
-        "from_user",
+    total = len(FORCE_SUB_CHANNELS)
+
+    # All four verified.
+    if (
+        joined_count == total
+        and not missing_channels
+        and not failed_channels
     ):
-        user = message_or_query.from_user
-    else:
-        user = None
-
-    if not user:
-        return False
-
-    joined, missing = (
-        await get_membership_status(
-            client,
-            user.id,
-        )
-    )
-
-    total = len(
-        joined
-    ) + len(
-        missing
-    )
-
-    # All required channels joined.
-    if not missing:
         return True
 
-    text = force_sub_text(
-        len(joined),
-        total,
+    text = make_force_sub_text(
+        joined_count,
+        len(missing_channels),
+        len(failed_channels),
     )
 
-    markup = build_force_sub_keyboard(
-        missing
+    keyboard = make_force_sub_keyboard(
+        missing_channels,
+        failed_channels,
     )
 
-    # CallbackQuery
-    if hasattr(
-        message_or_query,
-        "message",
-    ):
-        query = message_or_query
-
-        await query.answer()
-
-        try:
-            await query.message.edit_text(
-                text,
-                reply_markup=markup,
-            )
-        except Exception:
-            try:
-                await query.message.edit_caption(
-                    caption=text,
-                    reply_markup=markup,
-                )
-            except Exception:
-                await query.message.reply_text(
-                    text,
-                    reply_markup=markup,
-                )
-
-    # Message
-    else:
-        await message_or_query.reply_text(
-            text,
-            reply_markup=markup,
-        )
+    await message.reply_text(
+        text,
+        reply_markup=keyboard,
+    )
 
     return False
 
@@ -293,77 +335,225 @@ async def show_force_sub(
 # ============================================================
 
 @Client.on_message(
-    filters.private
-    & filters.command("start"),
-    group=-100,
+    filters.private & filters.command("start")
 )
-async def start(client: Client, message):
+async def start(
+    client: Client,
+    message: Message,
+):
     user_id = message.from_user.id
+    bot_id = int(
+        getattr(
+            client,
+            "bot_id",
+            0,
+        )
+    )
 
-    # --------------------------------------------------------
-    # FORCE SUB
-    # --------------------------------------------------------
+    try:
+        # ----------------------------------------------------
+        # REGISTER USER
+        # ----------------------------------------------------
 
-    joined, missing = (
-        await get_membership_status(
+        try:
+            await db.add_user(user_id)
+        except Exception:
+            log.exception(
+                "Could not create/find user %s",
+                user_id,
+            )
+
+        # ----------------------------------------------------
+        # FORCE SUBSCRIBE
+        # ----------------------------------------------------
+
+        (
+            joined_count,
+            missing_channels,
+            failed_channels,
+        ) = await get_force_sub_status(
             client,
             user_id,
         )
-    )
 
-    if missing:
-        text = force_sub_text(
-            len(joined),
-            len(joined) + len(missing),
+        total = len(FORCE_SUB_CHANNELS)
+
+        if (
+            joined_count != total
+            or missing_channels
+            or failed_channels
+        ):
+            text = make_force_sub_text(
+                joined_count,
+                len(missing_channels),
+                len(failed_channels),
+            )
+
+            keyboard = make_force_sub_keyboard(
+                missing_channels,
+                failed_channels,
+            )
+
+            await message.reply_text(
+                text,
+                reply_markup=keyboard,
+            )
+            return
+
+        # ----------------------------------------------------
+        # PREMIUM DEEP LINK
+        # ----------------------------------------------------
+
+        if (
+            len(message.command) > 1
+            and message.command[1].startswith("plans_")
+        ):
+            try:
+                target_bot_id = int(
+                    message.command[1].split(
+                        "_",
+                        1,
+                    )[1]
+                )
+            except (
+                ValueError,
+                IndexError,
+            ):
+                target_bot_id = bot_id
+
+            buttons = [
+                [
+                    InlineKeyboardButton(
+                        f"{plan.name} — {plan.stars} ⭐",
+                        callback_data=(
+                            f"buy:{plan.key}:{target_bot_id}"
+                        ),
+                    )
+                ]
+                for plan in all_paid_plans()
+            ]
+
+            buttons.append(
+                [
+                    InlineKeyboardButton(
+                        "⬅️ Back",
+                        callback_data="start",
+                    )
+                ]
+            )
+
+            await message.reply_text(
+                "💎 **AniToon Premium Plans**\n\n"
+                "Choose a plan for 30 days:\n\n"
+                "🆓 **Free** — 0 ⭐ — 10 GB/day\n"
+                "⚡ **Pro** — 10 ⭐ — 20 GB/day\n"
+                "💎 **Premium** — 20 ⭐ — 40 GB/day\n"
+                "👑 **Ultra** — 30 ⭐ — 60 GB/day\n\n"
+                "⭐ Payment is handled by AniToon_1Bot.",
+                reply_markup=InlineKeyboardMarkup(
+                    buttons
+                ),
+            )
+            return
+
+        # ----------------------------------------------------
+        # LOAD USER PLAN
+        # ----------------------------------------------------
+
+        plan_name = "🆓 Free"
+        used = 0
+        remaining = (
+            10
+            * 1024
+            * 1024
+            * 1024
         )
 
-        markup = build_force_sub_keyboard(
-            missing
+        try:
+            subscription = (
+                await db.get_subscription(
+                    user_id,
+                    bot_id,
+                )
+            )
+
+            plan = get_plan(
+                subscription.get(
+                    "plan",
+                    "free",
+                )
+            )
+
+            used = await db.get_usage(
+                user_id,
+                bot_id,
+            )
+
+            plan_name = plan.name
+
+            remaining = max(
+                plan.daily_limit - used,
+                0,
+            )
+
+        except Exception:
+            log.exception(
+                "Database read failed during /start"
+            )
+
+        # ----------------------------------------------------
+        # WELCOME
+        # ----------------------------------------------------
+
+        welcome_text = (
+            "🔥 **Welcome to AniToon Bot** 🔥\n\n"
+            f"👋 Hello **{message.from_user.first_name}**!\n\n"
+            "📂 Send me any file, video or audio "
+            "to rename and process it.\n\n"
+            f"💎 **Plan:** {plan_name}\n"
+            f"🚀 **Used Today:** `{humanbytes(used)}`\n"
+            f"⏳ **Remaining:** `{humanbytes(remaining)}`\n\n"
+            "🖼 Send an image to save a custom thumbnail.\n"
+            "📝 Use `/setcaption` for a custom caption.\n"
+            "🏷 Use `/metadata` for audio/subtitle track names."
         )
+
+        keyboard = main_menu(
+            getattr(
+                client,
+                "is_main_bot",
+                False,
+            )
+        )
+
+        if Config.START_PIC:
+            try:
+                await message.reply_photo(
+                    photo=Config.START_PIC,
+                    caption=welcome_text,
+                    reply_markup=keyboard,
+                )
+                return
+            except Exception:
+                log.exception(
+                    "START_PIC failed; sending text instead"
+                )
 
         await message.reply_text(
-            text,
-            reply_markup=markup,
+            welcome_text,
+            reply_markup=keyboard,
         )
 
-        return
+    except Exception:
+        log.exception(
+            "Unhandled /start error for user %s",
+            user_id,
+        )
 
-    # --------------------------------------------------------
-    # NORMAL START
-    #
-    # Keep your existing normal AniToon
-    # start/menu code below this point.
-    # --------------------------------------------------------
-
-    keyboard = InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton(
-                    "🛠 Help & Usage",
-                    callback_data="help",
-                ),
-                InlineKeyboardButton(
-                    "ℹ️ About",
-                    callback_data="about",
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    "⚙️ Settings",
-                    callback_data="settings",
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    "💎 Buy Premium",
-                    callback_data="upgrade",
-                ),
-            ],
-        ]
-    )
-
-    await message.reply_text(
-        "👋 **Welcome to AniToon!**\n\n"
-        "Send me a file to get started.",
-        reply_markup=keyboard,
-    )
+        try:
+            await message.reply_text(
+                "⚠️ A temporary error occurred.\n\n"
+                "Please send `/start` again.",
+            )
+        except Exception:
+            pass
