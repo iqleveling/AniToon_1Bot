@@ -21,10 +21,7 @@ def main_menu(is_main_bot: bool = True):
             InlineKeyboardButton("🛠 Help", callback_data="help"),
             InlineKeyboardButton("⚙️ Settings", callback_data="settings"),
         ],
-        [
-            InlineKeyboardButton("✏️ Rename", callback_data="start_rename"),
-            InlineKeyboardButton("🔄 Convert", callback_data="start_convert"),
-        ],
+        [InlineKeyboardButton("✏️ Rename", callback_data="start_rename")],
     ]
     if is_main_bot:
         rows.append([InlineKeyboardButton("🤖 Create Your Own Clone Bot", callback_data="create_clone")])
@@ -47,10 +44,7 @@ def settings_menu():
 
 def help_menu():
     return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("⚙️ Settings", callback_data="settings"),
-            InlineKeyboardButton("🔄 Convert", callback_data="start_convert"),
-        ],
+        [InlineKeyboardButton("⚙️ Settings", callback_data="settings")],
         [InlineKeyboardButton("🔙 Back", callback_data="start")],
     ])
 
@@ -122,7 +116,8 @@ def advanced_menu(job_id: str):
             InlineKeyboardButton("➕ Add Audio", callback_data=f"job:addaudio:{job_id}"),
             InlineKeyboardButton("➕ Add Subtitle", callback_data=f"job:addsubtitle:{job_id}"),
         ],
-        [InlineKeyboardButton("✂️ Trim Video", callback_data=f"job:trim:{job_id}")],
+        [InlineKeyboardButton("✂️ Trim Video", callback_data=f"job:trim:{job_id}"),
+        ],
         [InlineKeyboardButton("🔙 Back", callback_data=f"job:back:{job_id}")],
     ])
 
