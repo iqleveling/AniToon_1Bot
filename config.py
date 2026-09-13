@@ -55,8 +55,14 @@ class Config:
         .lstrip("@")
     )
 
-    # FORCE_SUB accepts one or more usernames/chat IDs separated by commas.
-    FORCE_SUB = _env_str_list("FORCE_SUB")
+    # Four required force-subscription chats.
+    # Values may be usernames (without @) or numeric chat IDs.
+    FORCE_SUB = _env_str_list("FORCE_SUB")[:4]
+
+    # Optional direct links for the four force-sub channels, in the same order.
+    # This is especially useful for a private channel, whose invite URL cannot
+    # be derived from a numeric chat ID alone.
+    FORCE_SUB_LINKS = _env_str_list("FORCE_SUB_LINKS")[:4]
 
     LOG_CHANNEL = _env_int("LOG_CHANNEL")
 
