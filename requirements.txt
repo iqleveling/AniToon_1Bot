@@ -1,9 +1,10 @@
-# Fast Telegram client with C-based crypto acceleration.
-# Pyrofork keeps the Pyrogram API while providing an actively maintained fork.
-Pyrofork==2.2.11
+# Telegram client + C acceleration
+# Keep the stable Pyrogram API because the current AniToon codebase and
+# dependencies are built around Pyrogram 2.0.x.
+Pyrogram==2.0.106
 TgCrypto==1.2.5
 
-# Async/runtime performance.
+# Async/runtime performance
 uvloop==0.21.0
 
 motor==3.7.1
