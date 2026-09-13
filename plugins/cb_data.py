@@ -39,24 +39,26 @@ async def cb_start(
     # --------------------------------------------------------
     try:
         from plugins.start import (
-            get_membership_status,
-            force_sub_text,
-            build_force_sub_keyboard,
+            get_force_sub_status,
+            make_force_sub_text,
+            make_force_sub_keyboard,
         )
 
-        joined, missing = await get_membership_status(
+        joined_count, missing, failed = await get_force_sub_status(
             client,
             user_id,
         )
 
-        if missing:
-            text = force_sub_text(
-                len(joined),
-                len(joined) + len(missing),
+        if missing or failed:
+            text = make_force_sub_text(
+                joined_count,
+                len(missing),
+                len(failed),
             )
 
-            markup = build_force_sub_keyboard(
+            markup = make_force_sub_keyboard(
                 missing,
+                failed,
             )
 
             try:
@@ -578,167 +580,6 @@ async def cb_metadata_settings(
 
 
 # ============================================================
-# FORCE SUBSCRIBE - CHECK & RETRY
-# ============================================================
-
-@Client.on_callback_query(
-    filters.regex(r"^check_force_sub$")
-)
-async def cb_check_force_sub(
-    client: Client,
-    callback_query,
-):
-    """
-    Recheck all four required channels.
-
-    Only channels not joined by the user are displayed.
-    The Check & Retry button is always kept at the bottom.
-    """
-
-    user_id = callback_query.from_user.id
-
-    await callback_query.answer()
-
-    try:
-        from plugins.start import (
-            get_membership_status,
-            force_sub_text,
-            build_force_sub_keyboard,
-        )
-
-        joined, missing = await get_membership_status(
-            client,
-            user_id,
-        )
-
-    except Exception:
-        await callback_query.answer(
-            "⚠️ Could not verify the channels. Please try again.",
-            show_alert=True,
-        )
-        return
-
-    total = len(joined) + len(missing)
-
-    # --------------------------------------------------------
-    # ALL FOUR CHANNELS JOINED
-    # --------------------------------------------------------
-
-    if not missing:
-        await callback_query.answer(
-            f"✅ Joined {total}/{total} channels!",
-            show_alert=True,
-        )
-
-        bot_id = int(
-            getattr(
-                client,
-                "bot_id",
-                0,
-            )
-        )
-
-        try:
-            subscription = await db.get_subscription(
-                user_id,
-                bot_id,
-            )
-
-            plan = get_plan(
-                subscription.get(
-                    "plan",
-                    "free",
-                )
-            )
-
-            used = await db.get_usage(
-                user_id,
-                bot_id,
-            )
-
-            remaining = max(
-                plan.daily_limit - used,
-                0,
-            )
-
-            plan_name = plan.name
-
-        except Exception:
-            plan_name = "🆓 Free"
-            used = 0
-            remaining = 10 * 1024 * 1024 * 1024
-
-        text = (
-            "🔥 **Welcome to AniToon Bot** 🔥\n\n"
-            f"👋 Hello **{callback_query.from_user.first_name}**!\n\n"
-            "✅ **Channel verification complete!**\n"
-            f"📊 **Joined:** {total}/{total}\n\n"
-            "📂 Send me any file, video or audio "
-            "to rename and process it.\n\n"
-            f"💎 **Plan:** {plan_name}\n"
-            f"🚀 **Used Today:** `{humanbytes(used)}`\n"
-            f"⏳ **Remaining:** `{humanbytes(remaining)}`"
-        )
-
-        keyboard = main_menu(
-            getattr(
-                client,
-                "is_main_bot",
-                False,
-            )
-        )
-
-        try:
-            await edit_callback_message(
-                callback_query,
-                text,
-                reply_markup=keyboard,
-            )
-        except Exception:
-            try:
-                await client.send_message(
-                    user_id,
-                    text,
-                    reply_markup=keyboard,
-                )
-            except Exception:
-                pass
-
-        return
-
-    # --------------------------------------------------------
-    # USER STILL HAS MISSING CHANNELS
-    # --------------------------------------------------------
-
-    await callback_query.answer(
-        f"Joined {len(joined)}/{total}.",
-        show_alert=True,
-    )
-
-    text = force_sub_text(
-        len(joined),
-        total,
-    )
-
-    keyboard = build_force_sub_keyboard(
-        missing,
-    )
-
-    try:
-        await edit_callback_message(
-            callback_query,
-            text,
-            reply_markup=keyboard,
-        )
-    except Exception:
-        try:
-            await callback_query.message.reply_text(
-                text,
-                reply_markup=keyboard,
-            )
-        except Exception:
-            pass
-
 # ============================================================
 # FORCE SUBSCRIBE - CHECK & RETRY
 # ============================================================
