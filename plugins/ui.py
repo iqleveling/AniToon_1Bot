@@ -1,6 +1,39 @@
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 
+def force_sub_menu():
+    """Four channel buttons followed by one Check & Retry button."""
+    links = list(getattr(__import__("config").Config, "FORCE_SUB_LINKS", []))[:4]
+    rows = []
+
+    for index in range(4):
+        link = links[index] if index < len(links) else None
+        if link:
+            rows.append([
+                InlineKeyboardButton(
+                    f"📢 Channel {index + 1}",
+                    url=link,
+                )
+            ])
+        else:
+            # Callback fallback keeps the button visible even if a link is
+            # missing. The membership check still protects access.
+            rows.append([
+                InlineKeyboardButton(
+                    f"📢 Channel {index + 1}",
+                    callback_data=f"force_missing:{index + 1}",
+                )
+            ])
+
+    rows.append([
+        InlineKeyboardButton(
+            "🔄 Check & Retry",
+            callback_data="force_retry",
+        )
+    ])
+    return InlineKeyboardMarkup(rows)
+
+
 def main_menu(is_main_bot: bool = True):
     rows = [
         [
@@ -13,35 +46,35 @@ def main_menu(is_main_bot: bool = True):
         ],
     ]
     if is_main_bot:
-        rows.append([InlineKeyboardButton("🤖 Create Clone", callback_data="create_clone")])
-    return InlineKeyboardMarkup(rows)
-
-
-def force_sub_menu(links):
-    """Build the four required channel buttons and a Check & Retry button."""
-    rows = []
-    labels = ["📢 Channel 1", "📢 Channel 2", "📢 Channel 3", "📢 Channel 4"]
-    for index, link in enumerate(links[:4]):
-        if link:
-            rows.append([InlineKeyboardButton(labels[index], url=link)])
-    rows.append([InlineKeyboardButton("🔄 Check & Retry", callback_data="check_fsub")])
+        rows.append([
+            InlineKeyboardButton(
+                "🤖 Create Clone",
+                callback_data="create_clone",
+            )
+        ])
     return InlineKeyboardMarkup(rows)
 
 
 def settings_menu():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📝 Caption", callback_data="settings_caption"),
-         InlineKeyboardButton("🖼 Thumbnail", callback_data="settings_thumb")],
-        [InlineKeyboardButton("🏷 Metadata", callback_data="metadata_settings"),
-         InlineKeyboardButton("💎 Plan", callback_data="upgrade")],
+        [
+            InlineKeyboardButton("📝 Caption", callback_data="settings_caption"),
+            InlineKeyboardButton("🖼 Thumbnail", callback_data="settings_thumb"),
+        ],
+        [
+            InlineKeyboardButton("🏷 Metadata", callback_data="metadata_settings"),
+            InlineKeyboardButton("💎 Plan", callback_data="upgrade"),
+        ],
         [InlineKeyboardButton("🔙 Back", callback_data="start")],
     ])
 
 
 def help_menu():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("⚙️ Settings", callback_data="settings"),
-         InlineKeyboardButton("💎 Plans", callback_data="upgrade")],
+        [
+            InlineKeyboardButton("⚙️ Settings", callback_data="settings"),
+            InlineKeyboardButton("💎 Plans", callback_data="upgrade"),
+        ],
         [InlineKeyboardButton("🔙 Back", callback_data="start")],
     ])
 
@@ -57,12 +90,24 @@ def thumbnail_menu():
 def file_action_menu(job_id: str):
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("✏️ Custom Rename", callback_data=f"job:rename:{job_id}"),
-            InlineKeyboardButton("🤖 Auto Rename", callback_data=f"job:auto:{job_id}"),
+            InlineKeyboardButton(
+                "✏️ Custom Rename",
+                callback_data=f"job:rename:{job_id}",
+            ),
+            InlineKeyboardButton(
+                "🤖 Auto Rename",
+                callback_data=f"job:auto:{job_id}",
+            ),
         ],
         [
-            InlineKeyboardButton("🔄 Convert", callback_data=f"job:convert:{job_id}"),
-            InlineKeyboardButton("🛠 Advanced Rename", callback_data=f"job:advanced:{job_id}"),
+            InlineKeyboardButton(
+                "🔄 Convert",
+                callback_data=f"job:convert:{job_id}",
+            ),
+            InlineKeyboardButton(
+                "🛠 Advanced Rename",
+                callback_data=f"job:advanced:{job_id}",
+            ),
         ],
         [InlineKeyboardButton("❌ Cancel", callback_data=f"job:cancel:{job_id}")],
     ])
@@ -71,8 +116,16 @@ def file_action_menu(job_id: str):
 def auto_preview_menu(job_id: str):
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ Confirm", callback_data=f"job:confirmauto:{job_id}")],
-        [InlineKeyboardButton("✏️ Custom Rename", callback_data=f"job:rename:{job_id}"),
-         InlineKeyboardButton("🔙 Back", callback_data=f"job:back:{job_id}")],
+        [
+            InlineKeyboardButton(
+                "✏️ Custom Rename",
+                callback_data=f"job:rename:{job_id}",
+            ),
+            InlineKeyboardButton(
+                "🔙 Back",
+                callback_data=f"job:back:{job_id}",
+            ),
+        ],
     ])
 
 
@@ -105,14 +158,22 @@ def advanced_menu(job_id: str):
 
 
 async def edit_callback_message(callback_query, text, reply_markup=None):
-    """Edit either text or caption and fall back to a new message."""
     message = callback_query.message
     try:
-        return await message.edit_text(text, reply_markup=reply_markup)
+        return await message.edit_text(
+            text,
+            reply_markup=reply_markup,
+        )
     except Exception:
         pass
     try:
-        return await message.edit_caption(caption=text, reply_markup=reply_markup)
+        return await message.edit_caption(
+            caption=text,
+            reply_markup=reply_markup,
+        )
     except Exception:
         pass
-    return await message.reply_text(text, reply_markup=reply_markup)
+    return await message.reply_text(
+        text,
+        reply_markup=reply_markup,
+    )
