@@ -52,7 +52,21 @@ class Config:
     ).strip()
 
     # Progress-bar characters used by helper.utils.progress_for_pyrogram.
-    # Keep these configurable, but always provide safe defaults so a missing
-    # Render environment variable cannot break Telegram downloads.
     COMPLETED_STR = os.getenv("COMPLETED_STR", "▰")
     REMAINING_STR = os.getenv("REMAINING_STR", "▱")
+
+    # Performance controls. The defaults are deliberately moderate so a single
+    # Render instance can serve several users without saturating its network.
+    # Pyrogram defaults max_concurrent_transmissions to 1; raising it helps
+    # throughput when several users are transferring files at the same time.
+    MAX_CONCURRENT_TRANSMISSIONS = max(
+        1, int(os.getenv("MAX_CONCURRENT_TRANSMISSIONS", "4"))
+    )
+
+    # Fast FFmpeg preset for CPU-only hosts. Set FFMPEG_PRESET=faster/veryfast
+    # if you prefer smaller output files over maximum conversion speed.
+    FFMPEG_PRESET = os.getenv("FFMPEG_PRESET", "ultrafast").strip() or "ultrafast"
+    FFMPEG_THREADS = max(0, int(os.getenv("FFMPEG_THREADS", "0")))
+    PROGRESS_UPDATE_INTERVAL = max(
+        0.5, float(os.getenv("PROGRESS_UPDATE_INTERVAL", "0.8"))
+    )
