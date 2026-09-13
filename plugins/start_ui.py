@@ -25,7 +25,6 @@ async def clean_start(client, message):
     except Exception:
         pass
 
-    # Main bot ForceSub remains active. Clone bots intentionally bypass it.
     if getattr(client, "is_main_bot", False):
         joined, missing, failed = await get_force_sub_status(client, user_id)
         total = len(missing) + joined + len(failed)
@@ -71,8 +70,8 @@ async def clean_start(client, message):
 async def start_rename_action(client, callback_query):
     await callback_query.answer()
     await callback_query.message.reply_text(
-        "✏️ **Rename**\n\nSend me the file you want to rename.\n\n"
-        "After the file is received, choose **Custom Rename**, **Auto Rename**, or **Advanced Rename**."
+        "✏️ **Rename:**\n"
+        "Send me the file you want to rename."
     )
     raise StopPropagation
 
