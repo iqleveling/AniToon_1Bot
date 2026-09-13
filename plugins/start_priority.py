@@ -1,9 +1,9 @@
 """High-priority /start dispatcher."""
 
-from pyrogram import Client, filters, StopPropagation
+from pyrogram import Client, StopPropagation, filters
 
 from config import Config
-
+from plugins.ui import main_menu
 
 
 def _apply_force_sub_links():
@@ -30,6 +30,19 @@ def _apply_force_sub_links():
     group=-100,
 )
 async def priority_start(client, message):
+    # Clones are already created by an owner who has passed the main-bot
+    # ForceSub gate. Requiring every clone to be an administrator in the
+    # same four channels would make newly created clones appear dead.
+    if not getattr(client, "is_main_bot", False):
+        user = message.from_user
+        await message.reply_text(
+            "🔥 **Welcome to AniToon Clone** 🔥\n\n"
+            f"👋 Hello **{user.first_name}**!\n\n"
+            "📂 Send me any file, video or audio to get started.",
+            reply_markup=main_menu(False),
+        )
+        raise StopPropagation
+
     _apply_force_sub_links()
 
     from plugins.start import start
