@@ -8,8 +8,14 @@ from pyrogram.types import Message
 
 from helper.job_state import jobs
 from helper.ffmpeg import convert_media
-from helper.utils import humanbytes
-from plugins.rename import _ask_name, _finish_job, _extension, _safe_filename, _base_without_extension
+from plugins.rename import (
+    _ask_name,
+    _base_without_extension,
+    _download_job,
+    _extension,
+    _finish_job,
+    _safe_filename,
+)
 
 
 VIDEO_MIME = {
@@ -114,10 +120,8 @@ async def convert_entry_fix(client, cb):
 async def rename_reply_fix(client, message: Message):
     """Reliable filename reply handler.
 
-    The old handler relied on the replied-to message still exposing ForceReply.
-    Telegram clients can omit that markup when the message is edited/replied to,
-    which left the job active forever. The selected job action is the authoritative
-    state here.
+    The selected job action is used as the source of truth instead of requiring
+    the replied-to message to still expose ForceReply markup.
     """
     job = await jobs.get_user_job(message.from_user.id)
     if not job or job.selected_action not in {"custom_name", "convert_name"}:
@@ -167,15 +171,13 @@ async def rename_reply_fix(client, message: Message):
     group=-1000,
 )
 async def retry_file_when_waiting(client, message: Message):
-    """Allow a user to retry a file when a previous rename prompt was abandoned."""
+    """Replace an abandoned rename/convert prompt with a fresh file job."""
     job = await jobs.get_user_job(message.from_user.id)
     if not job or job.selected_action not in WAITING_ACTIONS:
         return
 
-    try:
-        shutil.rmtree(job.work_dir, ignore_errors=True)
-    finally:
-        await jobs.remove(job.job_id)
+    shutil.rmtree(job.work_dir, ignore_errors=True)
+    await jobs.remove(job.job_id)
 
-    # Let the normal file router/download handler process the replacement file.
+    await _download_job(client, message)
     raise StopPropagation
