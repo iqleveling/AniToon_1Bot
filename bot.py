@@ -32,6 +32,7 @@ class Bot(Client):
             api_hash=Config.API_HASH,
             bot_token=Config.BOT_TOKEN,
             workers=100,
+            max_concurrent_transmissions=Config.MAX_CONCURRENT_TRANSMISSIONS,
             plugins={"root": "plugins"},
         )
         self.is_main_bot = True
@@ -61,9 +62,13 @@ class Bot(Client):
                 self.bot_username = me.username
 
                 log.info(
-                    "✅ Main bot started: @%s (ID: %s)",
+                    "Main bot started: @%s (ID: %s)",
                     me.username or "unknown",
                     me.id,
+                )
+                log.info(
+                    "Telegram transfer concurrency: %s",
+                    Config.MAX_CONCURRENT_TRANSMISSIONS,
                 )
 
                 await self._setup_commands()
@@ -71,7 +76,7 @@ class Bot(Client):
                 if Config.IS_CLONE_ALLOWED:
                     self.clone_manager = CloneManager(self)
                     await self.clone_manager.start_all()
-                    log.info("🤖 Clone Engine: enabled")
+                    log.info("Clone Engine: enabled")
 
                 return
 
