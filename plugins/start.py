@@ -7,25 +7,76 @@ from config import Config
 from helper.database import db
 from helper.plans import get_plan, all_paid_plans
 from helper.utils import humanbytes
-from plugins.ui import main_menu
+from plugins.ui import main_menu, force_sub_menu
 
 log = logging.getLogger(__name__)
 
 
 async def _force_sub_ok(client, user_id: int) -> bool:
-    for channel in Config.FORCE_SUB:
+    """Return True only when the user is a member of all four required chats."""
+    channels = Config.FORCE_SUB[:4]
+    if len(channels) < 4:
+        log.error("FORCE_SUB must contain exactly 4 channels; found %s", len(channels))
+        return False
+
+    for channel in channels:
         try:
             member = await client.get_chat_member(channel, user_id)
-            if str(member.status).lower() in {"left", "kicked", "banned"}:
+            status = str(getattr(member, "status", "")).lower()
+            if status in {"left", "kicked", "banned"}:
                 return False
         except Exception:
-            # A bad/missing force-sub channel must not kill /start.
-            log.warning("Force-sub check failed for %s", channel, exc_info=True)
+            # A force-sub check failure must fail closed.
+            log.exception("Force-sub check failed for %s", channel)
+            return False
     return True
 
 
-async def _reply_start(client, message: Message):
-    user_id = message.from_user.id
+async def _force_sub_links(client):
+    """Resolve display links for the four required chats."""
+    channels = Config.FORCE_SUB[:4]
+    configured = Config.FORCE_SUB_LINKS[:4]
+    links = []
+
+    for i, channel in enumerate(channels):
+        link = configured[i] if i < len(configured) else ""
+        if link:
+            links.append(link)
+            continue
+
+        try:
+            chat = await client.get_chat(channel)
+            username = getattr(chat, "username", None)
+            invite_link = getattr(chat, "invite_link", None)
+            if username:
+                link = f"https://t.me/{username}"
+            elif invite_link:
+                link = invite_link
+        except Exception:
+            log.exception("Could not resolve force-sub link for %s", channel)
+
+        links.append(link)
+
+    return links
+
+
+async def _send_force_sub(client, message: Message):
+    links = await _force_sub_links(client)
+    await message.reply_text(
+        "🔒 **Join Required Channels**\n\n"
+        "To use AniToon, please join all 4 required channels below.\n\n"
+        "1️⃣ Channel 1\n"
+        "2️⃣ Channel 2\n"
+        "3️⃣ Channel 3\n"
+        "4️⃣ Channel 4\n\n"
+        "After joining all four channels, press **🔄 Check & Retry**.",
+        reply_markup=force_sub_menu(links),
+    )
+
+
+async def _reply_start(client, message: Message, user_override=None):
+    actor = user_override or message.from_user
+    user_id = actor.id
     bot_id = int(getattr(client, "bot_id", 0))
 
     # Always make a DB user record, but don't make a temporary Mongo outage
@@ -67,10 +118,7 @@ async def _reply_start(client, message: Message):
         return
 
     if not await _force_sub_ok(client, user_id):
-        await message.reply_text(
-            "🚫 **Access Denied**\n\n"
-            "Please join the required channel(s) and send `/start` again."
-        )
+        await _send_force_sub(client, message)
         return
 
     # Defaults let the bot still answer if MongoDB is temporarily unavailable.
@@ -89,7 +137,7 @@ async def _reply_start(client, message: Message):
 
     welcome_text = (
         "🔥 **Welcome to AniToon Bot** 🔥\n\n"
-        f"👋 Hello **{message.from_user.first_name}**!\n\n"
+        f"👋 Hello **{actor.first_name}**!\n\n"
         "📂 Send me any file, video or audio to rename and process it.\n\n"
         f"💎 **Plan:** {plan_name}\n"
         f"🚀 **Used Today:** `{humanbytes(used)}`\n"
@@ -127,6 +175,46 @@ async def start(client: Client, message: Message):
             await message.reply_text(
                 "⚠️ AniToon is online, but a temporary setup error occurred. "
                 "Please send `/start` again in a few seconds."
+            )
+        except Exception:
+            pass
+
+
+@Client.on_callback_query(filters.regex(r"^check_fsub$"))
+async def check_force_subscription(client: Client, callback_query):
+    user_id = callback_query.from_user.id
+
+    if await _force_sub_ok(client, user_id):
+        await callback_query.answer("✅ All required channels joined.", show_alert=False)
+        # Re-enter the normal start flow using the callback user's identity.
+        try:
+            await callback_query.message.delete()
+        except Exception:
+            pass
+        await _reply_start(
+            client,
+            callback_query.message,
+            user_override=callback_query.from_user,
+        )
+        return
+
+    await callback_query.answer(
+        "❌ Please join all 4 channels first.",
+        show_alert=True,
+    )
+    links = await _force_sub_links(client)
+    try:
+        await callback_query.message.edit_text(
+            "🔒 **Join Required Channels**\n\n"
+            "Please join all 4 required channels, then press **🔄 Check & Retry**.",
+            reply_markup=force_sub_menu(links),
+        )
+    except Exception:
+        try:
+            await callback_query.message.edit_caption(
+                "🔒 **Join Required Channels**\n\n"
+                "Please join all 4 required channels, then press **🔄 Check & Retry**.",
+                reply_markup=force_sub_menu(links),
             )
         except Exception:
             pass
