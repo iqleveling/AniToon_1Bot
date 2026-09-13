@@ -40,7 +40,7 @@ def time_formatter(milliseconds: int) -> str:
     return tmp[:-2] if tmp else "0 s"
 
 
-# --- Choice 8-B: PROMAX PROGRESS BAR ---
+# --- Choice 8-B: PROGRESS BAR ---
 async def progress_for_pyrogram(
     current,
     total,
@@ -81,10 +81,15 @@ async def progress_for_pyrogram(
 
     completed = math.floor(percentage / 10)
 
+    # Safe fallbacks prevent a missing Config attribute from aborting
+    # Pyrogram's internal get_file/download operation.
+    completed_str = getattr(Config, "COMPLETED_STR", "▰")
+    remaining_str = getattr(Config, "REMAINING_STR", "▱")
+
     progress = (
         "["
-        + Config.COMPLETED_STR * completed
-        + Config.REMAINING_STR * (10 - completed)
+        + completed_str * completed
+        + remaining_str * (10 - completed)
         + "]\n"
         + f"**📊 Progress**: {percentage:.2f}%\n"
     )
