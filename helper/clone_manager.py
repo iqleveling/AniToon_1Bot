@@ -1,7 +1,6 @@
 import logging
 
 from pyrogram import Client
-from pyrogram.types import BotCommand
 
 from config import Config
 from helper.database import db
@@ -10,35 +9,21 @@ from helper.database import db
 log = logging.getLogger(__name__)
 
 
-CLONE_COMMANDS = [
-    BotCommand("start", "Start AniToon"),
-    BotCommand("help", "Show help and usage"),
-    BotCommand("plan", "View your current plan"),
-    BotCommand("status", "View plan and daily usage"),
-    BotCommand("setcaption", "Set your custom caption"),
-    BotCommand("metadata", "Manage audio/subtitle metadata"),
-]
-
-
 class CloneManager:
     def __init__(self, main_client):
         self.main_client = main_client
         self.clones: dict[int, Client] = {}
 
     async def _setup_clone_commands(self, client: Client):
-        """Install only commands that are actually available on clones."""
+        """Clones have no slash-command menu; commands are reserved for the main bot."""
         try:
             await client.delete_bot_commands()
-            await client.set_bot_commands(CLONE_COMMANDS)
         except Exception:
-            # A command-menu problem must not make an otherwise healthy clone
-            # unusable.
-            log.exception("Could not update clone command menu")
+            log.exception("Could not clear clone command menu")
 
     async def start_clone(self, bot_token: str):
         client = None
         try:
-            # Never log the token or include it in an exception message.
             token_prefix = bot_token.split(":", 1)[0]
             client = Client(
                 name=f"clone_{token_prefix}",
