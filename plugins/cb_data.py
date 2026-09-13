@@ -297,18 +297,11 @@ async def cb_view_thumb(
     )
 
     if not thumb:
-        return await callback_query.message.edit_text(
-            "❌ **No custom thumbnail is saved.**\n\n"
-            "Send an image to save one.",
+        return await edit_callback_message(
+            callback_query,
+            "❌ **No custom thumbnail is saved.**\n\nSend an image to save one.",
             reply_markup=InlineKeyboardMarkup(
-                [
-                    [
-                        InlineKeyboardButton(
-                            "🔙 Back",
-                            callback_data="settings",
-                        )
-                    ]
-                ]
+                [[InlineKeyboardButton("🔙 Back", callback_data="settings")]]
             ),
         )
 
