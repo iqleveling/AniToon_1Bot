@@ -16,19 +16,11 @@ logging.basicConfig(
 log = logging.getLogger("AniToon")
 
 
-# ============================================================
-# BOT COMMAND MENU
-# ============================================================
-
+# Only the public commands that are intended to be used directly.
+# All other functionality is available through the inline UI.
 BOT_COMMANDS = [
-    BotCommand("start", "Start AniToon"),
-    BotCommand("help", "Show help and usage"),
-    BotCommand("plan", "View your current plan"),
-    BotCommand("status", "View plan and daily usage"),
-    BotCommand("clone", "Create your AniToon clone"),
-    BotCommand("setcaption", "Set your custom caption"),
-    BotCommand("metadata", "Manage audio/subtitle metadata"),
-    BotCommand("paysupport", "Get payment support"),
+    BotCommand("start", "Open AniToon"),
+    BotCommand("help", "Show help"),
 ]
 
 
@@ -49,20 +41,15 @@ class Bot(Client):
         self.clone_manager = None
 
     async def _setup_commands(self):
-        """
-        Replace the old Telegram command menu completely.
-        delete_bot_commands() clears the previous default scope,
-        then set_bot_commands() installs the current clean menu.
-        """
+        """Reset Telegram's command menu and expose only working public commands."""
         try:
             await self.delete_bot_commands()
             await self.set_bot_commands(BOT_COMMANDS)
             log.info(
-                "✅ Telegram command menu reset and updated: %s commands",
+                "Telegram command menu reset: %s public commands",
                 len(BOT_COMMANDS),
             )
         except Exception:
-            # A command-menu failure must never stop the bot itself.
             log.exception("Could not update Telegram bot commands")
 
     async def start(self):
