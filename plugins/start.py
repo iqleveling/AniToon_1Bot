@@ -2,6 +2,7 @@ import asyncio
 import logging
 
 from pyrogram import Client, filters
+from pyrogram.errors import UserNotParticipant
 from pyrogram.types import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
@@ -43,6 +44,45 @@ FORCE_SUB_CHANNELS = [
         "link": "",  # Put your private-channel invite link here.
     },
 ]
+
+PRIVATE_FORCE_SUB_CHAT_ID = -1002732670564
+
+
+# ============================================================
+# PRIVATE CHANNEL JOIN REQUEST
+# ============================================================
+
+@Client.on_chat_join_request(
+    filters.chat(PRIVATE_FORCE_SUB_CHAT_ID),
+    group=-100,
+)
+async def private_force_sub_join_request(client: Client, request):
+    """
+    A join request is enough to satisfy Channel 4.
+
+    Telegram keeps the user in a non-member state until an admin
+    approves the request, so get_chat_member() alone would return
+    USER_NOT_PARTICIPANT. Record the request in MongoDB and let the
+    bot accept the user immediately after the request is submitted.
+    """
+    try:
+        user = getattr(request, "from_user", None)
+        if not user:
+            return
+
+        await db.mark_force_sub_request(
+            user.id,
+            PRIVATE_FORCE_SUB_CHAT_ID,
+        )
+
+        log.info(
+            "Force-sub: user=%s submitted join request to Channel 4; request accepted as verification",
+            user.id,
+        )
+    except Exception:
+        log.exception(
+            "Could not record Channel 4 join request"
+        )
 
 
 # ============================================================
@@ -86,7 +126,7 @@ async def _check_one_channel(
 ):
     """
     Returns:
-        True   -> definitely joined
+        True   -> definitely joined OR Channel 4 join request exists
         False  -> definitely not joined
         None   -> bot could not verify channel
     """
@@ -115,6 +155,18 @@ async def _check_one_channel(
             "member",
             "restricted",
         }:
+            # Once Telegram confirms real membership, the old
+            # pending marker is no longer needed.
+            if channel["chat"] == PRIVATE_FORCE_SUB_CHAT_ID:
+                try:
+                    await db.clear_force_sub_request(
+                        user_id,
+                        PRIVATE_FORCE_SUB_CHAT_ID,
+                    )
+                except Exception:
+                    log.exception(
+                        "Could not clear Channel 4 pending request"
+                    )
             return True
 
         # Definitely not joined.
@@ -123,6 +175,24 @@ async def _check_one_channel(
             "kicked",
             "banned",
         }:
+            # A Channel 4 join request is intentionally treated as
+            # sufficient even though Telegram reports the user as
+            # not yet a member.
+            if channel["chat"] == PRIVATE_FORCE_SUB_CHAT_ID:
+                try:
+                    if await db.has_force_sub_request(
+                        user_id,
+                        PRIVATE_FORCE_SUB_CHAT_ID,
+                    ):
+                        log.info(
+                            "Force-sub: user=%s Channel 4 has pending join request; allowing bot",
+                            user_id,
+                        )
+                        return True
+                except Exception:
+                    log.exception(
+                        "Could not check Channel 4 pending request"
+                    )
             return False
 
         # Unknown status should not silently be treated as
@@ -135,6 +205,26 @@ async def _check_one_channel(
         )
         return None
 
+    except UserNotParticipant:
+        # This is the exact error shown when a user has submitted a
+        # private-channel join request but Telegram has not approved it.
+        if channel["chat"] == PRIVATE_FORCE_SUB_CHAT_ID:
+            try:
+                if await db.has_force_sub_request(
+                    user_id,
+                    PRIVATE_FORCE_SUB_CHAT_ID,
+                ):
+                    log.info(
+                        "Force-sub: user=%s Channel 4 pending join request verified",
+                        user_id,
+                    )
+                    return True
+            except Exception:
+                log.exception(
+                    "Could not check Channel 4 pending request"
+                )
+        return False
+
     except Exception:
         log.exception(
             "Force-sub verification failed: user=%s channel=%s chat=%s",
@@ -142,6 +232,25 @@ async def _check_one_channel(
             channel["name"],
             channel["chat"],
         )
+
+        # If the private channel is currently uncheckable but a
+        # join-request update was already received, keep allowing it.
+        if channel["chat"] == PRIVATE_FORCE_SUB_CHAT_ID:
+            try:
+                if await db.has_force_sub_request(
+                    user_id,
+                    PRIVATE_FORCE_SUB_CHAT_ID,
+                ):
+                    log.info(
+                        "Force-sub: user=%s Channel 4 pending join request retained after verification error",
+                        user_id,
+                    )
+                    return True
+            except Exception:
+                log.exception(
+                    "Could not check Channel 4 pending request after verification error"
+                )
+
         return None
 
 
