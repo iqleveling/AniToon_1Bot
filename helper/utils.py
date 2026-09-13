@@ -4,11 +4,9 @@ import os
 from config import Config
 
 
-# --- Choice 10-B: HUMAN READABLE DATA ---
+# --- HUMAN READABLE DATA ---
 def humanbytes(size):
-    """
-    Converts raw bytes into a human-readable format.
-    """
+    """Convert raw bytes into a compact human-readable value."""
     if not size:
         return "0 B"
 
@@ -21,94 +19,78 @@ def humanbytes(size):
 
 
 def time_formatter(milliseconds: int) -> str:
-    """
-    Converts milliseconds into a readable time format.
-    """
+    """Convert milliseconds into a compact readable duration."""
     seconds, milliseconds = divmod(int(milliseconds), 1000)
     minutes, seconds = divmod(seconds, 60)
     hours, minutes = divmod(minutes, 60)
     days, hours = divmod(hours, 24)
 
-    tmp = (
-        (str(days) + "d, " if days else "")
-        + (str(hours) + "h, " if hours else "")
-        + (str(minutes) + "m, " if minutes else "")
-        + (str(seconds) + "s, " if seconds else "")
-        + (str(milliseconds) + "ms, " if milliseconds else "")
-    )
+    parts = []
+    if days:
+        parts.append(f"{days}d")
+    if hours:
+        parts.append(f"{hours}h")
+    if minutes:
+        parts.append(f"{minutes}m")
+    if seconds:
+        parts.append(f"{seconds}s")
+    if milliseconds and not parts:
+        parts.append(f"{milliseconds}ms")
 
-    return tmp[:-2] if tmp else "0 s"
+    return " ".join(parts) or "0s"
 
 
-# --- Choice 8-B: PROGRESS BAR ---
+def _progress_bar(percentage: float) -> str:
+    """Render the 20-character progress bar used by AniToon."""
+    completed_str = getattr(Config, "COMPLETED_STR", "█") or "█"
+    remaining_str = getattr(Config, "REMAINING_STR", "░") or "░"
+    completed = max(0, min(20, int(percentage / 5)))
+    return completed_str * completed + remaining_str * (20 - completed)
+
+
 async def progress_for_pyrogram(
     current,
     total,
     ud_type,
     message,
-    start
+    start,
 ):
-    """
-    Updates the Telegram message with download/upload progress.
-    """
+    """Update a clean download/upload progress message.
 
-    now = time.time()
-    diff = now - start
-
-    # Avoid unnecessary Telegram message edits.
-    if diff < 1 or current == total:
+    The same layout is intentionally used for both stages so users see:
+    Downloading -> Uploading without the old square-bracket progress style.
+    """
+    if not total:
         return
 
-    percentage = current * 100 / total
+    now = time.time()
+    diff = max(now - start, 0.001)
+
+    # Update at most once per second, but always update at completion.
+    if diff < 1 and current != total:
+        return
+
+    percentage = min(100.0, current * 100 / total)
     speed = current / diff
-    elapsed_time = round(diff * 1000)
+    remaining = max(total - current, 0)
+    eta_seconds = remaining / speed if speed > 0 else 0
 
-    if speed > 0:
-        time_to_completion = round(
-            (total - current) / speed
-        ) * 1000
-    else:
-        time_to_completion = 0
+    bar = _progress_bar(percentage)
+    stage = str(ud_type or "📥 Downloading")
+    if not stage.startswith(("📥", "📤")):
+        stage = f"📥 {stage}"
 
-    estimated_total_time = (
-        elapsed_time + time_to_completion
-    )
-
-    elapsed_time_str = time_formatter(elapsed_time)
-    estimated_total_time_str = time_formatter(
-        estimated_total_time
-    )
-
-    completed = math.floor(percentage / 10)
-
-    # Safe fallbacks prevent a missing Config attribute from aborting
-    # Pyrogram's internal get_file/download operation.
-    completed_str = getattr(Config, "COMPLETED_STR", "▰")
-    remaining_str = getattr(Config, "REMAINING_STR", "▱")
-
-    progress = (
-        "["
-        + completed_str * completed
-        + remaining_str * (10 - completed)
-        + "]\n"
-        + f"**📊 Progress**: {percentage:.2f}%\n"
-    )
-
-    tmp = (
-        progress
-        + f"**{ud_type}**: "
-        f"{humanbytes(current)} of "
-        f"{humanbytes(total)}\n"
-        + f"**🚀 Speed**: {humanbytes(speed)}/s\n"
-        + f"**⏳ ETA**: "
-        f"{estimated_total_time_str or '0 s'}\n"
-        + f"**⏱️ Elapsed**: "
-        f"{elapsed_time_str or '0 s'}"
+    text = (
+        f"**{stage}**\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"[{bar}] {percentage:.0f}%\n\n"
+        f"📦 **Size:** {humanbytes(current)} / {humanbytes(total)}\n"
+        f"🚀 **Speed:** {humanbytes(speed)}/s\n"
+        f"⏳ **ETA:** {time_formatter(eta_seconds * 1000)}\n"
+        f"⏱️ **Elapsed:** {time_formatter(diff * 1000)}"
     )
 
     try:
-        await message.edit_text(
-            f"**AniToon Promax Processing...**\n\n{tmp}"
-        )
+        await message.edit_text(text)
     except Exception:
         pass
