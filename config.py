@@ -18,7 +18,7 @@ def _env_int(name: str, default: int = 0) -> int:
 
 def _env_int_list(name: str) -> list[int]:
     raw = os.environ.get(name, "")
-    result: list[int] = []
+    result = []
     for item in raw.replace(",", " ").split():
         try:
             result.append(int(item))
@@ -37,7 +37,6 @@ class Config:
     API_HASH = os.environ.get("API_HASH", "").strip()
     BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
 
-    # Keep the existing Render variable and support MONGO_URI as fallback.
     DATABASE_URL = (
         os.environ.get("DATABASE_URL")
         or os.environ.get("MONGO_URI")
@@ -49,43 +48,34 @@ class Config:
     if OWNER_ID and OWNER_ID not in ADMIN:
         ADMIN.append(OWNER_ID)
 
-    MAIN_BOT_USERNAME = (
-        os.environ.get("MAIN_BOT_USERNAME", "")
-        .strip()
-        .lstrip("@")
-    )
+    MAIN_BOT_USERNAME = os.environ.get(
+        "MAIN_BOT_USERNAME", ""
+    ).strip().lstrip("@")
 
-    # Four required force-subscription chats.
-    # Values may be usernames (without @) or numeric chat IDs.
+    # The first four entries are the required force-sub channels.
     FORCE_SUB = _env_str_list("FORCE_SUB")[:4]
 
-    # Optional direct links for the four force-sub channels, in the same order.
-    # This is especially useful for a private channel, whose invite URL cannot
-    # be derived from a numeric chat ID alone.
+    # Matching clickable links for Channel 1..4.
+    # For private channels use the private invite link.
     FORCE_SUB_LINKS = _env_str_list("FORCE_SUB_LINKS")[:4]
 
     LOG_CHANNEL = _env_int("LOG_CHANNEL")
-
     IS_CLONE_ALLOWED = _env_bool("IS_CLONE_ALLOWED", True)
 
     START_PIC = os.environ.get("START_PIC", "").strip()
-
     COMPLETED_STR = os.environ.get("COMPLETED_STR", "🔵")
     REMAINING_STR = os.environ.get("REMAINING_STR", "⚪")
 
-    AUDIO_NAME = (
-        os.environ.get("AUDIO_NAME", "AniToon Official").strip()
-        or "AniToon Official"
-    )
-    SUBTITLE_NAME = (
-        os.environ.get("SUBTITLE_NAME", "AniToon Official").strip()
-        or "AniToon Official"
-    )
+    AUDIO_NAME = os.environ.get(
+        "AUDIO_NAME", "AniToon Official"
+    ).strip() or "AniToon Official"
+    SUBTITLE_NAME = os.environ.get(
+        "SUBTITLE_NAME", "AniToon Official"
+    ).strip() or "AniToon Official"
 
     PORT = _env_int("PORT", 10000)
 
 
-# Fail early for the three credentials required to start the main bot.
 if Config.API_ID <= 0:
     raise RuntimeError("API_ID is missing or invalid.")
 if not Config.API_HASH:
