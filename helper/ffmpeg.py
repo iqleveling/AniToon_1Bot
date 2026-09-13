@@ -3,19 +3,13 @@ import asyncio
 import logging
 import json
 
-
 DEFAULT_METADATA_NAME = "AniToon Official"
 
 
 async def fix_metadata(input_file, output_file, audio_name=DEFAULT_METADATA_NAME, subtitle_name=DEFAULT_METADATA_NAME):
     audio_name = str(audio_name).strip() or DEFAULT_METADATA_NAME
     subtitle_name = str(subtitle_name).strip() or DEFAULT_METADATA_NAME
-    cmd = [
-        "ffmpeg", "-y", "-i", input_file, "-map", "0", "-c", "copy",
-        "-metadata", f"title={audio_name}",
-        "-metadata:s:a", f"title={audio_name}",
-        "-metadata:s:s", f"title={subtitle_name}", output_file,
-    ]
+    cmd = ["ffmpeg", "-y", "-i", input_file, "-map", "0", "-c", "copy", "-metadata", f"title={audio_name}", "-metadata:s:a", f"title={audio_name}", "-metadata:s:s", f"title={subtitle_name}", output_file]
     process = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
     _, stderr = await process.communicate()
     if process.returncode == 0:
@@ -78,13 +72,7 @@ async def inspect_media_streams(file_path):
         if kind not in {"audio", "subtitle"}:
             continue
         tags = stream.get("tags") or {}
-        result.append({
-            "index": int(stream.get("index", -1)),
-            "type": kind,
-            "codec": stream.get("codec_name") or "unknown",
-            "language": tags.get("language") or "und",
-            "title": tags.get("title") or "",
-        })
+        result.append({"index": int(stream.get("index", -1)), "type": kind, "codec": stream.get("codec_name") or "unknown", "language": tags.get("language") or "und", "title": tags.get("title") or ""})
     return result
 
 
@@ -109,33 +97,39 @@ async def remux_with_track_names(input_file, output_file, track_titles: dict[int
 
 
 async def convert_media(input_file, output_file, output_format: str):
-    """Convert media. MP4 is encoded as H.264/AAC and optimized for Telegram streaming."""
+    """Convert media. MP4 is H.264/AAC, excludes incompatible MKV subtitle tracks, and uses faststart."""
     output_format = output_format.lower().lstrip(".")
     video_formats = {"mp4", "mkv", "webm", "mov"}
     audio_formats = {"mp3", "m4a", "aac", "flac", "ogg"}
     if output_format not in video_formats | audio_formats:
         raise ValueError("Unsupported output format")
 
-    cmd = ["ffmpeg", "-y", "-i", input_file, "-map", "0"]
     if output_format == "mp4":
-        # Telegram-streamable MP4: H.264 + AAC with moov atom at the front.
-        cmd += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-c:a", "aac", "-movflags", "+faststart"]
-    elif output_format == "webm":
-        cmd += ["-c:v", "libvpx-vp9", "-deadline", "realtime", "-cpu-used", "4", "-c:a", "libopus"]
-    elif output_format in {"mkv", "mov"}:
-        cmd += ["-c", "copy"]
-    elif output_format == "mp3":
-        cmd += ["-vn", "-c:a", "libmp3lame", "-q:a", "2"]
-    elif output_format == "m4a":
-        cmd += ["-vn", "-c:a", "aac", "-b:a", "192k"]
-    elif output_format == "aac":
-        cmd += ["-vn", "-c:a", "aac", "-b:a", "192k"]
-    elif output_format == "flac":
-        cmd += ["-vn", "-c:a", "flac"]
+        cmd = [
+            "ffmpeg", "-y", "-i", input_file,
+            "-map", "0:v:0?", "-map", "0:a?",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+            "-c:a", "aac", "-movflags", "+faststart", "-pix_fmt", "yuv420p",
+            output_file,
+        ]
     else:
-        cmd += ["-vn", "-c:a", "libopus"]
+        cmd = ["ffmpeg", "-y", "-i", input_file]
+        if output_format == "webm":
+            cmd += ["-c:v", "libvpx-vp9", "-deadline", "realtime", "-cpu-used", "4", "-c:a", "libopus"]
+        elif output_format in {"mkv", "mov"}:
+            cmd += ["-c", "copy"]
+        elif output_format == "mp3":
+            cmd += ["-vn", "-c:a", "libmp3lame", "-q:a", "2"]
+        elif output_format == "m4a":
+            cmd += ["-vn", "-c:a", "aac", "-b:a", "192k"]
+        elif output_format == "aac":
+            cmd += ["-vn", "-c:a", "aac", "-b:a", "192k"]
+        elif output_format == "flac":
+            cmd += ["-vn", "-c:a", "flac"]
+        else:
+            cmd += ["-vn", "-c:a", "libopus"]
+        cmd.append(output_file)
 
-    cmd.append(output_file)
     process = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
     _, stderr = await process.communicate()
     if process.returncode == 0 and os.path.isfile(output_file):
