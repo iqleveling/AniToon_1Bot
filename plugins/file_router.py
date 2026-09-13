@@ -13,21 +13,19 @@ log = logging.getLogger("AniToon.file_router")
 
 
 async def _force_sub_ok(client, user_id: int) -> bool:
-    """Return True only when all required channels are verified."""
+    """Return True when the main bot has verified all required channels."""
+    # A clone is intentionally independent of the main bot's ForceSub
+    # administrator setup. Otherwise every user's newly created clone would
+    # need to be added as an admin to all required channels.
+    if not getattr(client, "is_main_bot", False):
+        return True
+
     try:
-        from plugins.start import (
-            get_force_sub_status,
-            make_force_sub_text,
-            make_force_sub_keyboard,
-            FORCE_SUB_CHANNELS,
-        )
+        from plugins.start import FORCE_SUB_CHANNELS, get_force_sub_status
 
         joined, missing, failed = await get_force_sub_status(client, user_id)
-        if joined == len(FORCE_SUB_CHANNELS) and not missing and not failed:
-            return True
-        return False
+        return joined == len(FORCE_SUB_CHANNELS) and not missing and not failed
     except Exception:
-        # Do not silently bypass ForceSub when its verification fails.
         log.exception("Force-sub check failed before file intake")
         return False
 
@@ -43,7 +41,6 @@ async def route_file_to_pipeline(client, message):
         if not user_id:
             return
 
-        # File messages must obey the same ForceSub requirement as /start.
         if not await _force_sub_ok(client, int(user_id)):
             from plugins.start import (
                 get_force_sub_status,
