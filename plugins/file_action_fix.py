@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+import os
+import shutil
+
 from pyrogram import Client, StopPropagation, filters
+from pyrogram.types import Message
 
 from helper.job_state import jobs
-from plugins.rename import _ask_name
+from helper.ffmpeg import convert_media
+from helper.utils import humanbytes
+from plugins.rename import _ask_name, _finish_job, _extension, _safe_filename, _base_without_extension
 
 
 VIDEO_MIME = {
@@ -17,6 +23,8 @@ AUDIO_MIME = {
     "mp3": "audio/mpeg",
     "m4a": "audio/mp4",
 }
+
+WAITING_ACTIONS = {"rename_format", "custom_name", "convert_name"}
 
 
 @Client.on_callback_query(filters.regex(r"^job:rename:([0-9a-f]+)$"), group=-1000)
@@ -57,23 +65,14 @@ async def rename_format_fix(client, cb):
 
     if mode == "video":
         job.mime_type = VIDEO_MIME["mp4"]
-        prompt = (
-            "🎬 **Rename as Video**\n\n"
-            "Enter the new filename.\n"
-            "The file will be sent as a video."
-        )
     else:
         job.mime_type = "application/octet-stream"
-        prompt = (
-            "📄 **Rename as Document**\n\n"
-            "Enter the new filename.\n"
-            "The file will be sent as a document."
-        )
 
+    # The Rename flow intentionally asks only for the filename after the mode choice.
     await _ask_name(
         client,
         job.user_id,
-        prompt,
+        "✏️ **Rename:**\nSend me the new filename.",
         job.job_id,
         "custom_name",
     )
@@ -104,10 +103,79 @@ async def convert_entry_fix(client, cb):
     await _ask_name(
         client,
         job.user_id,
-        f"🔄 **Convert to {fmt.upper()}**\n\n"
-        f"Enter the output filename.\n"
-        f"The `.{fmt}` extension will be used.",
+        f"🔄 **Convert to {fmt.upper()}**\n\nEnter the output filename.\nThe `.{fmt}` extension will be used.",
         job.job_id,
         "convert_name",
     )
+    raise StopPropagation
+
+
+@Client.on_message(filters.private & filters.reply & filters.text, group=-1000)
+async def rename_reply_fix(client, message: Message):
+    """Reliable filename reply handler.
+
+    The old handler relied on the replied-to message still exposing ForceReply.
+    Telegram clients can omit that markup when the message is edited/replied to,
+    which left the job active forever. The selected job action is the authoritative
+    state here.
+    """
+    job = await jobs.get_user_job(message.from_user.id)
+    if not job or job.selected_action not in {"custom_name", "convert_name"}:
+        return
+
+    text = (message.text or "").strip()
+    if not text:
+        await message.reply_text("❌ **Please send a valid filename.**")
+        raise StopPropagation
+
+    if job.selected_action == "convert_name":
+        ext = job.output_ext
+        if not ext:
+            await message.reply_text("❌ **Conversion format expired. Please select Convert again.**")
+            raise StopPropagation
+
+        name = _safe_filename(text)
+        if _extension(name) != ext:
+            name = f"{_base_without_extension(name)}.{ext}"
+        output_path = os.path.join(job.work_dir, name)
+        status = await message.reply_text(f"🔄 **Converting to {ext.upper()}...**")
+        try:
+            ok = await convert_media(job.input_path, output_path, ext)
+            if not ok:
+                raise RuntimeError("FFmpeg conversion failed")
+            await _finish_job(client, message, job, output_path, name)
+        except Exception as exc:
+            await status.edit_text(f"❌ **Conversion failed**\n\n`{str(exc)[:1000]}`")
+        raise StopPropagation
+
+    ext = _extension(job.original_name)
+    name = _safe_filename(text)
+    if not _extension(name) and ext:
+        name = f"{name}.{ext}"
+
+    output_path = os.path.join(job.work_dir, name)
+    try:
+        shutil.copy2(job.input_path, output_path)
+        await _finish_job(client, message, job, output_path, name)
+    except Exception as exc:
+        await message.reply_text(f"❌ **Rename failed**\n\n`{str(exc)[:1000]}`")
+    raise StopPropagation
+
+
+@Client.on_message(
+    filters.private & (filters.document | filters.video | filters.audio),
+    group=-1000,
+)
+async def retry_file_when_waiting(client, message: Message):
+    """Allow a user to retry a file when a previous rename prompt was abandoned."""
+    job = await jobs.get_user_job(message.from_user.id)
+    if not job or job.selected_action not in WAITING_ACTIONS:
+        return
+
+    try:
+        shutil.rmtree(job.work_dir, ignore_errors=True)
+    finally:
+        await jobs.remove(job.job_id)
+
+    # Let the normal file router/download handler process the replacement file.
     raise StopPropagation
