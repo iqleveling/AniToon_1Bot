@@ -1,12 +1,7 @@
-"""
-High-priority /start dispatcher.
-
-This runs before the normal plugin group so a broad private-message
-handler can never swallow /start. The existing start implementation
-remains the single source of truth.
-"""
+"""High-priority /start dispatcher."""
 
 from pyrogram import Client, filters
+from pyrogram import StopPropagation
 
 
 @Client.on_message(
@@ -17,4 +12,4 @@ async def priority_start(client, message):
     from plugins.start import start
 
     await start(client, message)
-    message.stop_propagation()
+    raise StopPropagation
