@@ -10,7 +10,6 @@ from pyrogram import Client, StopPropagation, filters
 from pyrogram.errors import FloodWait
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from config import Config
 from helper.database import db
 from helper.ffmpeg import convert_media
 from helper.job_state import Job, jobs
@@ -43,42 +42,76 @@ AUDIO_MIME = {
 WAITING_ACTIONS = {"rename_format", "custom_name", "convert_name"}
 
 
-async def _download_verified(client: Client, message: Message, path: str, status: Message, expected_size: int) -> int:
-    """Download the Telegram media and verify the complete byte count."""
+async def _download_verified(
+    client: Client,
+    message: Message,
+    work_dir: str,
+    final_path: str,
+    status: Message,
+    expected_size: int,
+) -> int:
+    """Download into a temporary Telegram-managed filename, then atomically move it.
+
+    Using a temporary filename prevents another handler or an interrupted Pyrogram
+    transfer from ever leaving the final job path in a half-created state.
+    """
     last_error = None
+    os.makedirs(work_dir, exist_ok=True)
+
     for attempt in range(1, 4):
+        temp_path = os.path.join(work_dir, f".anitoon_download_{uuid.uuid4().hex}.part")
         try:
-            if os.path.exists(path):
-                os.remove(path)
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+            if os.path.exists(final_path):
+                os.remove(final_path)
+
             await status.edit_text(
                 "📥 **AniToon: Downloading...**"
                 + (f"\n\nRetry `{attempt}/3`" if attempt > 1 else "")
             )
+
+            # Pyrogram writes the transfer to this unique path. Once download_media
+            # returns successfully, move it to the job's final input filename.
             result = await client.download_media(
                 message=message,
-                file_name=path,
+                file_name=temp_path,
                 progress=progress_for_pyrogram,
                 progress_args=("📥 Downloading", status, time.time()),
             )
-            if isinstance(result, str) and os.path.isfile(result) and result != path:
-                if os.path.exists(path):
-                    os.remove(path)
-                shutil.move(result, path)
 
-            if not os.path.isfile(path):
-                raise RuntimeError("Telegram did not create the downloaded file")
+            downloaded_path = result if isinstance(result, str) else temp_path
+            if not os.path.isfile(downloaded_path):
+                raise RuntimeError(
+                    "Telegram download completed but the local file was not created"
+                )
 
-            actual = os.path.getsize(path)
+            actual = os.path.getsize(downloaded_path)
             if expected_size and actual != expected_size:
-                last_error = RuntimeError(
+                raise RuntimeError(
                     f"Incomplete Telegram download: expected {expected_size} bytes, got {actual} bytes"
                 )
-                continue
-            return actual
+
+            if downloaded_path != final_path:
+                if os.path.exists(final_path):
+                    os.remove(final_path)
+                os.replace(downloaded_path, final_path)
+
+            if not os.path.isfile(final_path):
+                raise RuntimeError("Downloaded file disappeared before processing")
+
+            return os.path.getsize(final_path)
+
         except FloodWait:
             raise
         except Exception as exc:
             last_error = exc
+            for candidate in (temp_path, final_path):
+                try:
+                    if os.path.exists(candidate):
+                        os.remove(candidate)
+                except OSError:
+                    pass
             if attempt < 3:
                 await asyncio.sleep(1)
 
@@ -86,7 +119,7 @@ async def _download_verified(client: Client, message: Message, path: str, status
 
 
 async def _send_plain_output(client: Client, job: Job, path: str, filename: str):
-    """Reliable rename sender without the progress/thumbnail path that can fail."""
+    """Reliable rename sender without the old thumbnail/progress path."""
     ext = _extension(filename)
     mime = job.mime_type or ""
     caption = (
@@ -115,7 +148,7 @@ async def _send_plain_output(client: Client, job: Job, path: str, filename: str)
     group=-1000,
 )
 async def repaired_file_download(client: Client, message: Message):
-    """High-priority intake: use Telegram's real file size and verify the download."""
+    """Single high-priority file intake using Telegram's real file size."""
     user_id = message.from_user.id
     bot_id = int(getattr(client, "bot_id", 0))
     context, error = await _user_context(user_id, bot_id)
@@ -179,8 +212,9 @@ async def repaired_file_download(client: Client, message: Message):
     await jobs.acquire()
     try:
         actual_size = await _download_verified(
-            client, message, input_path, status, expected_size
+            client, message, work_dir, input_path, status, expected_size
         )
+
         if used + actual_size > plan.daily_limit:
             await status.edit_text(
                 "🚫 **This file exceeds your remaining daily quota.**\n\n"
@@ -216,6 +250,8 @@ async def repaired_file_download(client: Client, message: Message):
             f"⏳ **Telegram FloodWait**\n\nWaiting `{exc.value}` seconds..."
         )
         await asyncio.sleep(exc.value)
+        await jobs.remove(job_id)
+        shutil.rmtree(work_dir, ignore_errors=True)
     except Exception as exc:
         await status.edit_text(f"❌ **Download failed**\n\n`{str(exc)[:1000]}`")
         await jobs.remove(job_id)
@@ -232,7 +268,6 @@ async def rename_entry_fix(client, cb):
     if not job:
         await cb.answer("Job expired. Send the file again.", show_alert=True)
         raise StopPropagation
-
     await cb.answer()
     await jobs.update(job.job_id, selected_action="custom_name")
     await _ask_name(
@@ -254,11 +289,10 @@ async def rename_format_fix(client, cb):
     if not job:
         await cb.answer("Job expired. Send the file again.", show_alert=True)
         raise StopPropagation
-
     mode = cb.matches[0].group(2)
     await cb.answer()
     await jobs.update(job.job_id, extra={**job.extra, "rename_output_mode": mode})
-    job.mime_type = VIDEO_MIME["mp4"] if mode == "video" else "application/octet-stream"
+    job.mime_type = "video/mp4" if mode == "video" else "application/octet-stream"
     await _ask_name(
         client,
         job.user_id,
@@ -278,7 +312,6 @@ async def convert_entry_fix(client, cb):
     if not job:
         await cb.answer("Job expired. Send the file again.", show_alert=True)
         raise StopPropagation
-
     fmt = cb.matches[0].group(2)
     await cb.answer()
     job.output_ext = fmt
@@ -362,7 +395,7 @@ async def rename_reply_fix(client, message: Message):
     group=-999,
 )
 async def retry_file_when_waiting(client, message: Message):
-    """A new file replaces an abandoned rename/convert prompt."""
+    """Fallback cleanup for an abandoned rename/convert prompt."""
     job = await jobs.get_user_job(message.from_user.id)
     if not job or job.selected_action not in WAITING_ACTIONS:
         return
