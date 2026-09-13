@@ -1,6 +1,7 @@
 import logging
 
 from pyrogram import Client
+from pyrogram.types import BotCommand
 
 from config import Config
 from helper.database import db
@@ -9,10 +10,30 @@ from helper.database import db
 log = logging.getLogger(__name__)
 
 
+CLONE_COMMANDS = [
+    BotCommand("start", "Start AniToon"),
+    BotCommand("help", "Show help and usage"),
+    BotCommand("plan", "View your current plan"),
+    BotCommand("status", "View plan and daily usage"),
+    BotCommand("setcaption", "Set your custom caption"),
+    BotCommand("metadata", "Manage audio/subtitle metadata"),
+]
+
+
 class CloneManager:
     def __init__(self, main_client):
         self.main_client = main_client
         self.clones: dict[int, Client] = {}
+
+    async def _setup_clone_commands(self, client: Client):
+        """Install only commands that are actually available on clones."""
+        try:
+            await client.delete_bot_commands()
+            await client.set_bot_commands(CLONE_COMMANDS)
+        except Exception:
+            # A command-menu problem must not make an otherwise healthy clone
+            # unusable.
+            log.exception("Could not update clone command menu")
 
     async def start_clone(self, bot_token: str):
         client = None
@@ -31,12 +52,16 @@ class CloneManager:
             client.is_main_bot = False
             client.is_clone_bot = True
             client.bot_id = 0
+            client.bot_username = None
+            client.clone_manager = None
 
             await client.start()
             me = await client.get_me()
             client.bot_id = me.id
+            client.bot_username = me.username
             self.clones[me.id] = client
 
+            await self._setup_clone_commands(client)
             await db.set_clone_status(me.id, "online")
             log.info("Clone started: @%s", me.username or me.id)
             return client
