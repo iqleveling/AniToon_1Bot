@@ -738,3 +738,112 @@ async def cb_check_force_sub(
             )
         except Exception:
             pass
+
+# ============================================================
+# FORCE SUBSCRIBE - CHECK & RETRY
+# ============================================================
+
+@Client.on_callback_query(
+    filters.regex(r"^check_force_sub$")
+)
+async def cb_check_force_sub(
+    client: Client,
+    callback_query,
+):
+    from plugins.start import (
+        get_force_sub_status,
+        make_force_sub_text,
+        make_force_sub_keyboard,
+        FORCE_SUB_CHANNELS,
+    )
+
+    user_id = callback_query.from_user.id
+
+    (
+        joined_count,
+        missing_channels,
+        failed_channels,
+    ) = await get_force_sub_status(
+        client,
+        user_id,
+    )
+
+    total = len(FORCE_SUB_CHANNELS)
+
+    # --------------------------------------------------------
+    # ALL JOINED
+    # --------------------------------------------------------
+
+    if (
+        joined_count == total
+        and not missing_channels
+        and not failed_channels
+    ):
+        await callback_query.answer(
+            f"✅ Joined {total}/{total} channels!",
+            show_alert=True,
+        )
+
+        try:
+            await edit_callback_message(
+                callback_query,
+                "✅ **Channel Verification Complete**\n\n"
+                f"📊 **Joined:** `{total}/{total}`\n\n"
+                "🎉 You can now use AniToon.\n\n"
+                "📂 Send me any file, video or audio "
+                "to rename and process it.",
+                reply_markup=main_menu(
+                    getattr(
+                        client,
+                        "is_main_bot",
+                        False,
+                    )
+                ),
+            )
+        except Exception:
+            await client.send_message(
+                user_id,
+                "✅ **All required channels joined!**\n\n"
+                "📂 Send me a file to get started.",
+                reply_markup=main_menu(
+                    getattr(
+                        client,
+                        "is_main_bot",
+                        False,
+                    )
+                ),
+            )
+
+        return
+
+    # --------------------------------------------------------
+    # STILL MISSING
+    # --------------------------------------------------------
+
+    await callback_query.answer(
+        f"Joined {joined_count}/{total}",
+        show_alert=True,
+    )
+
+    text = make_force_sub_text(
+        joined_count,
+        len(missing_channels),
+        len(failed_channels),
+    )
+
+    keyboard = make_force_sub_keyboard(
+        missing_channels,
+        failed_channels,
+    )
+
+    try:
+        await edit_callback_message(
+            callback_query,
+            text,
+            reply_markup=keyboard,
+        )
+    except Exception:
+        await callback_query.message.reply_text(
+            text,
+            reply_markup=keyboard,
+        )
