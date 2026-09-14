@@ -19,13 +19,9 @@ async def fix_metadata(input_file, output_file, audio_name=DEFAULT_METADATA_NAME
 
 
 async def make_streamable(input_file, output_file):
-    """Remux with faststart while preserving the chosen/user-visible filename."""
+    """Remux a valid MP4 with faststart."""
     target = output_file
     replace_input = os.path.abspath(target) == os.path.abspath(input_file)
-    if os.path.basename(target) in {"telegram_streamable.mp4", "streamable.mp4"}:
-        target = os.path.join(os.path.dirname(target), os.path.basename(input_file))
-        if os.path.abspath(target) == os.path.abspath(input_file):
-            replace_input = True
     if replace_input:
         target = os.path.join(os.path.dirname(input_file), ".streamable." + os.path.basename(input_file))
 
@@ -108,8 +104,8 @@ async def remux_with_track_names(input_file, output_file, track_titles: dict[int
     return False
 
 
-async def convert_media(input_file, output_file, output_format: str):
-    """Convert media. MP4 is H.264/AAC, excludes incompatible MKV subtitle tracks, and uses faststart."""
+async def convert_media(input_file, output_file, output_format: str, progress_callback=None):
+    """Convert media and optionally report FFmpeg progress."""
     output_format = output_format.lower().lstrip(".")
     video_formats = {"mp4", "mkv", "webm", "mov"}
     audio_formats = {"mp3", "m4a", "aac", "flac", "ogg"}
@@ -117,7 +113,7 @@ async def convert_media(input_file, output_file, output_format: str):
         raise ValueError("Unsupported output format")
 
     if output_format == "mp4":
-        cmd = ["ffmpeg", "-y", "-i", input_file, "-map", "0:v:0?", "-map", "0:a?", "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-c:a", "aac", "-movflags", "+faststart", "-pix_fmt", "yuv420p", output_file]
+        cmd = ["ffmpeg", "-y", "-i", input_file, "-map", "0:v:0?", "-map", "0:a?", "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-c:a", "aac", "-movflags", "+faststart", "-pix_fmt", "yuv420p", "-progress", "pipe:1", "-nostats", output_file]
     else:
         cmd = ["ffmpeg", "-y", "-i", input_file]
         if output_format == "webm":
@@ -134,11 +130,32 @@ async def convert_media(input_file, output_file, output_format: str):
             cmd += ["-vn", "-c:a", "flac"]
         else:
             cmd += ["-vn", "-c:a", "libopus"]
-        cmd.append(output_file)
+        cmd += ["-progress", "pipe:1", "-nostats", output_file]
 
     process = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-    _, stderr = await process.communicate()
+    duration = 0.0
+    try:
+        probe = await asyncio.create_subprocess_exec("ffprobe", "-v", "quiet", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", input_file, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+        raw, _ = await probe.communicate()
+        duration = float(raw.decode().strip() or 0)
+    except Exception:
+        duration = 0.0
+
+    async def read_progress():
+        while True:
+            line = await process.stdout.readline()
+            if not line:
+                break
+            if progress_callback and line.startswith(b"out_time_ms="):
+                try:
+                    current = int(line.split(b"=", 1)[1]) / 1_000_000
+                    await progress_callback(current, duration)
+                except Exception:
+                    pass
+
+    await asyncio.gather(read_progress(), process.stderr.read())
+    await process.wait()
     if process.returncode == 0 and os.path.isfile(output_file):
         return True
-    logging.error("FFmpeg conversion error: %s", stderr.decode(errors="ignore"))
+    logging.error("FFmpeg conversion failed with return code %s", process.returncode)
     return False
