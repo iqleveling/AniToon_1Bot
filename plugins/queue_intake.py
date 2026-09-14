@@ -32,7 +32,9 @@ async def fifo_file_intake(client: Client, message: Message):
     if used >= plan.daily_limit:
         await message.reply_text(
             "🚫 **Daily Limit Reached!**\n\n"
-            f"Current Plan: {plan.name}\nDaily Limit: `{humanbytes(plan.daily_limit)}`\nUsed: `{humanbytes(used)}`",
+            f"Current Plan: {plan.name}\n"
+            f"Daily Limit: `{humanbytes(plan.daily_limit)}`\n"
+            f"Used: `{humanbytes(used)}`",
             reply_markup=InlineKeyboardMarkup(
                 [[InlineKeyboardButton("💎 Upgrade", callback_data="upgrade")]]
             ),
