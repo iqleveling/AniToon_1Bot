@@ -26,9 +26,11 @@ async def download_job(client: Client, message: Message, job: Job, status: Messa
     os.makedirs(job.work_dir, exist_ok=True)
     await jobs.acquire()
     try:
-        # Do not add a separate "Downloading..." message here. The same status
-        # message is reused by progress_for_pyrogram for the live transfer stats.
-        clear_transfer_cancel(job.job_id)
+        # Never clear a cancellation flag here: a cancel request may arrive
+        # between the action button and the actual Telegram download call.
+        if __import__("helper.utils", fromlist=["is_transfer_cancelled"]).is_transfer_cancelled(job.job_id):
+            raise AniToonTransferCancelled("Transfer cancelled by user")
+
         result = await client.download_media(
             message=message,
             file_name=job.input_path,
@@ -42,7 +44,9 @@ async def download_job(client: Client, message: Message, job: Job, status: Messa
             raise RuntimeError("Telegram download completed but the local file was not found")
         actual = os.path.getsize(job.input_path)
         if expected_size and actual != expected_size:
-            raise RuntimeError(f"Incomplete download: expected {humanbytes(expected_size)}, got {humanbytes(actual)}")
+            raise RuntimeError(
+                f"Incomplete download: expected {humanbytes(expected_size)}, got {humanbytes(actual)}"
+            )
         await jobs.update(job.job_id, extra={**job.extra, "downloaded_size": actual})
         return actual
     except AniToonTransferCancelled:
@@ -54,7 +58,7 @@ async def download_job(client: Client, message: Message, job: Job, status: Messa
     except FloodWait:
         raise
     finally:
-        clear_transfer_cancel(job.job_id)
+        # The caller clears the flag only after the whole job is finished.
         jobs.release()
 
 
