@@ -74,6 +74,7 @@ async def repaired_file_download(client: Client, message: Message):
     original_name = _safe_filename(getattr(media, "file_name", None) or f"file_{message.id}")
     extension = _extension(original_name)
     mime_type = getattr(media, "mime_type", None) or ""
+    file_id = getattr(media, "file_id", "") or ""
 
     if used >= plan.daily_limit:
         await message.reply_text(
@@ -96,13 +97,19 @@ async def repaired_file_download(client: Client, message: Message):
         await message.reply_text("⏳ **You already have an active file job.**\n\nPlease finish or cancel it first.")
         raise StopPropagation
 
-    status = await message.reply_text(
-        "🎯 **File received**\n\n"
-        f"📂 `{original_name}`\n"
-        f"📦 `{humanbytes(expected_size)}`\n\n"
-        "Choose an operation **before downloading**:",
-        reply_markup=file_action_menu(job_id),
+    detected = [f"{k}: {v}" for k, v in []]
+    text = (
+        "📂 **File Detected**\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"📄 **Name**\n`{original_name}`\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"📦 **Size**\n`{humanbytes(expected_size)}`\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"🆔 **File ID**\n`{file_id}`\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        "Choose an operation before downloading:"
     )
+    status = await message.reply_text(text, reply_markup=file_action_menu(job_id))
     await jobs.update(job_id, extra={**job.extra, "status_message_id": status.id})
     raise StopPropagation
 
@@ -115,7 +122,7 @@ async def rename_entry_fix(client, cb):
         raise StopPropagation
     await cb.answer()
     await jobs.update(job.job_id, selected_action="custom_name")
-    await _ask_name(client, job.user_id, "✏️ **Rename**\n\nSend me the new filename.", job.job_id, "custom_name")
+    await _ask_name(client, job.user_id, "Enter new filename:", job.job_id, "custom_name")
     raise StopPropagation
 
 
@@ -129,7 +136,7 @@ async def rename_format_fix(client, cb):
     await cb.answer()
     await jobs.update(job.job_id, extra={**job.extra, "rename_output_mode": mode})
     job.mime_type = "video/mp4" if mode == "video" else "application/octet-stream"
-    await _ask_name(client, job.user_id, "✏️ **Rename**\n\nSend me the new filename.", job.job_id, "custom_name")
+    await _ask_name(client, job.user_id, "Enter new filename:", job.job_id, "custom_name")
     raise StopPropagation
 
 
@@ -145,7 +152,7 @@ async def convert_entry_fix(client, cb):
     job.mime_type = VIDEO_MIME.get(fmt) or AUDIO_MIME.get(fmt) or "application/octet-stream"
     await _ask_name(
         client, job.user_id,
-        f"🔄 **Convert to {fmt.upper()}**\n\nEnter the output filename.\nThe `.{fmt}` extension will be used.",
+        f"Enter new filename for {fmt.upper()}:\nThe `.{fmt}` extension will be used.",
         job.job_id, "convert_name",
     )
     raise StopPropagation
@@ -169,14 +176,14 @@ async def rename_reply_fix(client, message: Message):
         name = _safe_filename(text)
         if _extension(name) != ext:
             name = f"{_base_without_extension(name)}.{ext}"
-        status = await message.reply_text("⏳ **Preparing conversion...**")
+        status = await message.reply_text("Downloading...", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data=f"transfer:cancel:{job.job_id}")]]))
         try:
             await download_job(client, await client.get_messages(message.chat.id, job.source_message_id), job, status)
+            await status.edit_text("⚙️ **Processing...**", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data=f"transfer:cancel:{job.job_id}")]]))
             ok = await convert_media(job.input_path, os.path.join(job.work_dir, name), ext)
             if not ok:
                 raise RuntimeError("FFmpeg conversion failed")
             output_path = os.path.join(job.work_dir, name)
-            await status.edit_text("📤 **Sending converted file...**")
             await _send_plain_output(client, job, output_path, name, status)
             await db.update_usage(job.user_id, job.bot_id, os.path.getsize(job.input_path))
             await status.edit_text(f"✅ **Conversion Complete!**\n\n📂 `{name}`\n📦 `{humanbytes(os.path.getsize(output_path))}`")
@@ -197,13 +204,13 @@ async def rename_reply_fix(client, message: Message):
     elif _extension(name) and ext:
         name = f"{_base_without_extension(name)}.{ext}"
     output_path = os.path.join(job.work_dir, name)
-    status = await message.reply_text("⏳ **Preparing renamed file...**")
+    status = await message.reply_text("Downloading...", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data=f"transfer:cancel:{job.job_id}")]]))
     try:
         await download_job(client, await client.get_messages(message.chat.id, job.source_message_id), job, status)
-        shutil.copy2(job.input_path, output_path)
-        await status.edit_text("📤 **Sending renamed file...**")
+        await _send_plain_output(client, job, output_path, name, status) if False else None
+        os.replace(job.input_path, output_path)
         await _send_plain_output(client, job, output_path, name, status)
-        await db.update_usage(job.user_id, job.bot_id, os.path.getsize(job.input_path))
+        await db.update_usage(job.user_id, job.bot_id, os.path.getsize(output_path))
         await status.edit_text(f"✅ **Rename Complete!**\n\n📂 `{name}`\n📦 `{humanbytes(os.path.getsize(output_path))}`")
     except AniToonTransferCancelled:
         await status.edit_text("❌ **Processing cancelled.**")
@@ -217,7 +224,7 @@ async def rename_reply_fix(client, message: Message):
 
 
 @Client.on_message(filters.private & (filters.document | filters.video | filters.audio), group=-999)
-async def retry_file_when_waiting(client, message: Message):
+async def retry_file_when_waiting(client: Client, message: Message):
     """Cancel the previous prompt when a new file arrives."""
     job = await jobs.get_user_job(message.from_user.id)
     if not job or job.selected_action not in WAITING_ACTIONS:
