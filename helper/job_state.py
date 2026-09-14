@@ -30,26 +30,32 @@ class JobManager:
         self.max_active = max(1, int(max_active))
         self._semaphore = asyncio.Semaphore(self.max_active)
         self._jobs: dict[str, Job] = {}
-        self._user_jobs: dict[int, str] = {}
+        self._user_jobs: dict[int, list[str]] = {}
         self._lock = asyncio.Lock()
 
     async def register(self, job: Job) -> bool:
         async with self._lock:
-            old = self._user_jobs.get(job.user_id)
-            if old and old in self._jobs:
-                return False
             self._jobs[job.job_id] = job
-            self._user_jobs[job.user_id] = job.job_id
+            self._user_jobs.setdefault(job.user_id, []).append(job.job_id)
             return True
 
     async def get(self, job_id: str) -> Job | None:
         async with self._lock:
             return self._jobs.get(job_id)
 
+    async def get_user_jobs(self, user_id: int) -> list[Job]:
+        async with self._lock:
+            ids = list(self._user_jobs.get(int(user_id), []))
+            return [self._jobs[job_id] for job_id in ids if job_id in self._jobs]
+
     async def get_user_job(self, user_id: int) -> Job | None:
         async with self._lock:
-            job_id = self._user_jobs.get(int(user_id))
-            return self._jobs.get(job_id) if job_id else None
+            ids = self._user_jobs.get(int(user_id), [])
+            jobs = [self._jobs[job_id] for job_id in ids if job_id in self._jobs]
+            for job in jobs:
+                if job.selected_action:
+                    return job
+            return jobs[0] if jobs else None
 
     async def update(self, job_id: str, **values: Any) -> Job | None:
         async with self._lock:
@@ -63,16 +69,26 @@ class JobManager:
     async def remove(self, job_id: str) -> None:
         async with self._lock:
             job = self._jobs.pop(job_id, None)
-            if job:
+            if not job:
+                return
+            queue = self._user_jobs.get(job.user_id, [])
+            try:
+                queue.remove(job_id)
+            except ValueError:
+                pass
+            if queue:
+                self._user_jobs[job.user_id] = queue
+            else:
                 self._user_jobs.pop(job.user_id, None)
 
     async def position(self, job_id: str) -> int:
-        # Queue position is approximate but stable and does not block handlers.
         async with self._lock:
-            waiting = [j for j in self._jobs.values() if j.active]
-            waiting.sort(key=lambda x: x.queued_at)
-            for index, job in enumerate(waiting, start=1):
-                if job.job_id == job_id:
+            job = self._jobs.get(job_id)
+            if not job:
+                return 0
+            waiting = sorted((j for j in self._jobs.values() if j.active), key=lambda item: item.queued_at)
+            for index, item in enumerate(waiting, start=1):
+                if item.job_id == job_id:
                     return index
         return 0
 
