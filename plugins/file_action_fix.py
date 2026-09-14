@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import os
 import shutil
 import time
@@ -10,7 +9,6 @@ from pyrogram import Client, StopPropagation, filters
 from pyrogram.errors import RPCError
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from config import Config
 from helper.archive_result import archive_message
 from helper.database import db
 from helper.ffmpeg import convert_media, get_video_info, make_streamable
@@ -19,14 +17,7 @@ from helper.job_transfer import download_job
 from helper.large_video import is_large_video, make_thumbnail, split_video_for_telegram
 from helper.plans import get_plan
 from helper.utils import AniToonTransferCancelled, clear_transfer_cancel, humanbytes, progress_for_pyrogram, reset_progress
-from plugins.rename import (
-    _ask_name,
-    _base_without_extension,
-    _extension,
-    _media_from_message,
-    _safe_filename,
-    _user_context,
-)
+from plugins.rename import _ask_name, _base_without_extension, _extension, _media_from_message, _safe_filename, _user_context
 from plugins.ui import file_action_menu
 
 VIDEO_MIME = {"mp4": "video/mp4", "mkv": "video/x-matroska", "webm": "video/webm", "mov": "video/quicktime"}
@@ -36,7 +27,6 @@ VIDEO_EXTENSIONS = {"mp4", "mkv", "webm", "mov", "avi", "flv", "ts", "m4v"}
 
 
 async def _send_video(client: Client, job: Job, path: str, filename: str, status: Message | None = None):
-    """Send a native Telegram video, with metadata/thumbnail and a safe fallback."""
     upload_path = path
     upload_name = filename
     ext = _extension(filename)
@@ -49,10 +39,14 @@ async def _send_video(client: Client, job: Job, path: str, filename: str, status
         upload_path = mp4_path
         upload_name = mp4_name
 
-    stream_path = os.path.join(job.work_dir, f".stream_{uuid.uuid4().hex}.mp4")
-    ready = await make_streamable(upload_path, stream_path)
-    if ready and os.path.isfile(ready) and os.path.getsize(ready) > 0:
-        upload_path = ready
+    # Faststart is useful for normal files. For very large parts, avoid making
+    # a second multi-gigabyte temporary copy on disk; the segment is already a
+    # valid MP4 and Telegram can play it as a native video.
+    if not is_large_video(upload_path):
+        stream_path = os.path.join(job.work_dir, f".stream_{uuid.uuid4().hex}.mp4")
+        ready = await make_streamable(upload_path, stream_path)
+        if ready and os.path.isfile(ready) and os.path.getsize(ready) > 0:
+            upload_path = ready
 
     duration, width, height = await get_video_info(upload_path)
     if not duration or not width or not height:
@@ -80,8 +74,6 @@ async def _send_video(client: Client, job: Job, path: str, filename: str, status
     try:
         return await client.send_video(job.user_id, upload_path, **kwargs)
     except Exception as first_error:
-        # Some Telegram media/codec combinations are rejected as a native
-        # video. The same processed bytes remain valid as a document.
         try:
             document_kwargs = {"caption": None, "file_name": upload_name}
             if thumb:
@@ -116,32 +108,31 @@ async def _send_plain_output(client: Client, job: Job, path: str, filename: str,
     return await client.send_document(job.user_id, path, caption=None, progress=progress, progress_args=args) if progress else await client.send_document(job.user_id, path, caption=None)
 
 
-async def _deliver_video_parts(client: Client, job: Job, path: str, filename: str, status: Message | None = None):
-    """Deliver a normal video or split a >2GB-class video into safe parts."""
-    if not is_large_video(path):
-        sent = await _send_plain_output(client, job, path, filename, status)
-        if sent:
-            await archive_message(client, sent)
-        return [sent]
+async def _deliver_output(client, job: Job, path: str, filename: str, status: Message | None = None):
+    """Send to the user and archive only messages that were actually delivered."""
+    if (job.mime_type or "").startswith("video/") or _extension(filename) in VIDEO_EXTENSIONS:
+        if is_large_video(path):
+            parts = await split_video_for_telegram(path, job.work_dir, filename)
+            sent_messages = []
+            total = len(parts)
+            for index, part in enumerate(parts, 1):
+                if status:
+                    await status.edit_text(f"📤 **Uploading part {index}/{total}...**")
+                sent = await _send_video(client, job, part, os.path.basename(part), status)
+                if not sent:
+                    raise RuntimeError(f"Upload returned no message for part {index}/{total}")
+                sent_messages.append(sent)
+                await archive_message(client, sent)
+            return sent_messages
 
-    parts = await split_video_for_telegram(path, job.work_dir, filename)
-    sent_messages = []
-    total = len(parts)
-    for index, part in enumerate(parts, 1):
-        if status:
-            await status.edit_text(f"📤 **Uploading part {index}/{total}...**")
-        part_name = os.path.basename(part)
-        sent = await _send_video(client, job, part, part_name, status)
-        if not sent:
-            raise RuntimeError(f"Upload returned no message for part {index}/{total}")
-        sent_messages.append(sent)
+    sent = await _send_plain_output(client, job, path, filename, status)
+    if sent:
         await archive_message(client, sent)
-    return sent_messages
+    return [sent] if sent else []
 
 
 @Client.on_message(filters.private & (filters.document | filters.video | filters.audio), group=-1000)
 async def repaired_file_download(client: Client, message: Message):
-    """Create the job and ask for the operation BEFORE downloading the file."""
     user_id = message.from_user.id
     bot_id = int(getattr(client, "bot_id", 0))
     context, error = await _user_context(user_id, bot_id)
@@ -257,14 +248,11 @@ async def rename_reply_fix(client, message: Message):
         try:
             await download_job(client, await client.get_messages(message.chat.id, job.source_message_id), job, status)
             await status.edit_text("⚙️ **Processing...**", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data=f"transfer:cancel:{job.job_id}")]]))
-            ok = await convert_media(job.input_path, os.path.join(job.work_dir, name), ext)
-            if not ok:
-                raise RuntimeError("FFmpeg conversion failed")
             output_path = os.path.join(job.work_dir, name)
-            await _deliver_video_parts(client, job, output_path, name, status) if ext in VIDEO_MIME else await _send_plain_output(client, job, output_path, name, status)
-            if ext not in VIDEO_MIME:
-                await archive_message(client, await client.get_messages(job.user_id, status.id)) if False else None
-            await db.update_usage(job.user_id, job.bot_id, os.path.getsize(job.input_path))
+            if not await convert_media(job.input_path, output_path, ext):
+                raise RuntimeError("FFmpeg conversion failed")
+            await _deliver_output(client, job, output_path, name, status)
+            await db.update_usage(job.user_id, job.bot_id, os.path.getsize(output_path))
             await status.edit_text(f"✅ **Conversion Complete!**\n\n📂 `{name}`\n📦 `{humanbytes(os.path.getsize(output_path))}`")
         except AniToonTransferCancelled:
             await status.edit_text("❌ **Processing cancelled.**")
@@ -289,7 +277,7 @@ async def rename_reply_fix(client, message: Message):
         os.replace(job.input_path, output_path)
         if job.extra.get("rename_output_mode") == "video":
             job.mime_type = "video/mp4"
-        await _deliver_video_parts(client, job, output_path, name, status) if (job.mime_type.startswith("video/") or _extension(name) in VIDEO_EXTENSIONS) else _send_plain_output(client, job, output_path, name, status)
+        await _deliver_output(client, job, output_path, name, status)
         await db.update_usage(job.user_id, job.bot_id, os.path.getsize(output_path))
         await status.edit_text(f"✅ **Rename Complete!**\n\n📂 `{name}`\n📦 `{humanbytes(os.path.getsize(output_path))}`")
     except AniToonTransferCancelled:
