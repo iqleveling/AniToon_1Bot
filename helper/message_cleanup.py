@@ -55,12 +55,26 @@ def _chat_id_from_send(args: tuple[Any, ...], kwargs: dict[str, Any]) -> int | N
         chat_id = int(chat_id)
     except (TypeError, ValueError):
         return None
-    # Only positive numeric IDs are direct private user chats. Channels and
-    # groups use negative IDs and must never be included in auto-cleanup.
     return chat_id if chat_id > 0 else None
 
 
-async def _cleanup_before_new_bot_message(client, chat_id: int):
+def _keep_message_id(kwargs: dict[str, Any]) -> int | None:
+    progress_args = kwargs.get("progress_args")
+    if isinstance(progress_args, (tuple, list)) and len(progress_args) >= 2:
+        status = progress_args[1]
+        message_id = getattr(status, "id", None)
+        if message_id:
+            return int(message_id)
+    reply_id = kwargs.get("reply_to_message_id")
+    if reply_id:
+        try:
+            return int(reply_id)
+        except (TypeError, ValueError):
+            pass
+    return None
+
+
+async def _cleanup_before_new_bot_message(client, chat_id: int, keep_message_id: int | None = None):
     if not chat_id:
         return
 
@@ -70,8 +84,8 @@ async def _cleanup_before_new_bot_message(client, chat_id: int):
         _last_bot_messages[chat_id] = []
         _last_user_message.pop(chat_id, None)
 
-    ids = old_bot[:]
-    if old_user:
+    ids = [message_id for message_id in old_bot if message_id != keep_message_id]
+    if old_user and old_user != keep_message_id:
         ids.append(old_user)
     if ids:
         await delete_messages(client, chat_id, ids)
@@ -117,7 +131,8 @@ def install_auto_cleanup(client):
             if chat_id:
                 lock = _locks[chat_id]
                 async with lock:
-                    await _cleanup_before_new_bot_message(self, chat_id)
+                    keep_id = _keep_message_id(kwargs)
+                    await _cleanup_before_new_bot_message(self, chat_id, keep_id)
                     result = await __original(*args, **kwargs)
                     await _remember_bot_result(chat_id, result)
                     return result
