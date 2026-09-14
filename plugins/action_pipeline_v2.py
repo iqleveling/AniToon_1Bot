@@ -57,18 +57,21 @@ async def _send_result(client, job, path: str, name: str, status, kind: str):
         duration, width, height = await get_video_info(path)
         if not duration or not width or not height:
             raise RuntimeError("Output is not a valid video")
-        stream_path = os.path.join(job.work_dir, "telegram_streamable.mp4")
+
+        stream_path = os.path.join(job.work_dir, "streamable.mp4")
         ready = await make_streamable(path, stream_path)
-        if ready:
+        if ready and os.path.abspath(ready) != os.path.abspath(path):
             path = ready
             duration, width, height = await get_video_info(path)
+
         if not duration or not width or not height:
             raise RuntimeError("Could not prepare a streamable video")
+
         return await client.send_video(
             job.user_id,
             path,
             caption=None,
-            duration=max(1, int(duration)),
+            duration=max(1, int(round(duration))),
             width=width,
             height=height,
             supports_streaming=True,
@@ -78,13 +81,19 @@ async def _send_result(client, job, path: str, name: str, status, kind: str):
 
     if kind == "audio":
         return await client.send_audio(
-            job.user_id, path, caption=None,
-            progress=progress_for_pyrogram, progress_args=args,
+            job.user_id,
+            path,
+            caption=None,
+            progress=progress_for_pyrogram,
+            progress_args=args,
         )
 
     return await client.send_document(
-        job.user_id, path, caption=None,
-        progress=progress_for_pyrogram, progress_args=args,
+        job.user_id,
+        path,
+        caption=None,
+        progress=progress_for_pyrogram,
+        progress_args=args,
     )
 
 
@@ -92,19 +101,22 @@ async def _run(client, job, status, name: str, kind: str, convert: bool):
     source = await client.get_messages(job.user_id, job.source_message_id)
     if not source:
         raise RuntimeError("Original file message is no longer available")
+
     await status.edit_text("📥 **Downloading...**", reply_markup=cancel(job.job_id))
     await download_job(client, source, job, status)
 
     output = os.path.join(job.work_dir, name)
     if convert:
-        await status.edit_text("⚙️ **Processing...**", reply_markup=cancel(job.job_id))
+        # Conversion is intentionally silent. The user requested no
+        # "Processing..." message; after conversion completes we show only
+        # the upload state.
         ext = os.path.splitext(name)[1].lstrip(".").lower()
         if not await convert_media(job.input_path, output, ext):
             raise RuntimeError("FFmpeg conversion failed")
     else:
         os.replace(job.input_path, output)
 
-    await status.edit_text("📤 **Uploading...**", reply_markup=cancel(job.job_id))
+    await status.edit_text("📤 **Uploading... 0%**", reply_markup=cancel(job.job_id))
     await _send_result(client, job, output, name, status, kind)
     await db.update_usage(job.user_id, job.bot_id, os.path.getsize(output))
 
@@ -132,7 +144,11 @@ async def rename_type_v2(client, cb):
     await jobs.update(job.job_id, selected_action="custom_name", extra={**job.extra, "rename_output_mode": mode})
     prompt = await client.send_message(
         job.user_id,
-        "✏️ **Enter new filename:**\n\n" + ("The file will be converted to a real streamable MP4 video." if mode == "video" else "The original extension will be preserved."),
+        "✏️ **Enter new filename:**\n\n" + (
+            "The file will be converted to a real streamable MP4 video."
+            if mode == "video"
+            else "The original extension will be preserved."
+        ),
         reply_markup=cancel(job.job_id),
     )
     await jobs.update(job.job_id, extra={**job.extra, "prompt_message_id": prompt.id})
@@ -160,6 +176,11 @@ async def convert_type_v2(client, cb):
 
 @Client.on_message(filters.private & filters.text, group=-1400)
 async def filename_v2(client, message):
+    # Never consume commands as filenames. In particular, /start must remain
+    # usable while another file is waiting in the per-user FIFO queue.
+    if (message.text or "").strip().startswith("/"):
+        return
+
     job = await jobs.get_user_job(message.from_user.id)
     if not job or job.selected_action not in {"custom_name", "convert_name"}:
         return
@@ -170,7 +191,7 @@ async def filename_v2(client, message):
         raise StopPropagation
 
     await jobs.update(job.job_id, extra={**job.extra, "input_message_id": message.id})
-    status = await message.reply_text("⏳ **Queued. Waiting for previous file...**")
+    status = await message.reply_text("📥 **Downloading...**", reply_markup=cancel(job.job_id))
     await jobs.update(job.job_id, extra={**job.extra, "status_message_id": status.id})
 
     user_lock = None
@@ -193,8 +214,6 @@ async def filename_v2(client, message):
             name = f"{_base_without_extension(text)}.{ext}" if ext else text
             await _run(client, job, status, name, "document", False)
 
-        # Do not add a caption or a second "Completed" message. The delivered
-        # Telegram media is the final completed message and keeps its filename.
         await _finish_cleanup(client, job)
 
     except AniToonTransferCancelled:
