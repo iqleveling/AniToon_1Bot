@@ -25,15 +25,28 @@ def cancel(job_id: str):
 
 async def _delete(client, chat_id: int, *ids: int | None):
     values = [int(x) for x in ids if x]
-    if values:
-        try:
-            await client.delete_messages(chat_id, values)
-        except Exception:
-            for value in values:
-                try:
-                    await client.delete_messages(chat_id, value)
-                except Exception:
-                    pass
+    if not values:
+        return
+    try:
+        await client.delete_messages(chat_id, values)
+    except Exception:
+        for value in values:
+            try:
+                await client.delete_messages(chat_id, value)
+            except Exception:
+                pass
+
+
+async def _safe_edit(message, text: str, reply_markup=None):
+    """Ignore harmless Telegram MESSAGE_NOT_MODIFIED edits."""
+    try:
+        current = getattr(message, "text", None) or getattr(message, "caption", None)
+        if current == text:
+            return
+        await message.edit_text(text, reply_markup=reply_markup)
+    except Exception as exc:
+        if "MESSAGE_NOT_MODIFIED" not in str(exc).upper():
+            raise
 
 
 async def _finish_cleanup(client, job):
@@ -56,20 +69,22 @@ async def _send_result(client, job, path: str, name: str, status, kind: str):
     if kind == "video":
         duration, width, height = await get_video_info(path)
         if not duration or not width or not height:
-            raise RuntimeError("Output is not a valid video")
+            raise RuntimeError("Output is not a valid video with duration and dimensions")
 
-        stream_path = os.path.join(job.work_dir, "streamable.mp4")
-        ready = await make_streamable(path, stream_path)
-        if ready and os.path.abspath(ready) != os.path.abspath(path):
-            path = ready
-            duration, width, height = await get_video_info(path)
+        upload_path = path
+        if not path.lower().endswith(".mp4"):
+            stream_path = os.path.join(job.work_dir, "streamable.mp4")
+            ready = await make_streamable(path, stream_path)
+            if ready:
+                upload_path = ready
+                duration, width, height = await get_video_info(upload_path)
 
         if not duration or not width or not height:
-            raise RuntimeError("Could not prepare a streamable video")
+            raise RuntimeError("Could not prepare a valid Telegram video")
 
         return await client.send_video(
             job.user_id,
-            path,
+            upload_path,
             caption=None,
             duration=max(1, int(round(duration))),
             width=width,
@@ -80,21 +95,9 @@ async def _send_result(client, job, path: str, name: str, status, kind: str):
         )
 
     if kind == "audio":
-        return await client.send_audio(
-            job.user_id,
-            path,
-            caption=None,
-            progress=progress_for_pyrogram,
-            progress_args=args,
-        )
+        return await client.send_audio(job.user_id, path, caption=None, progress=progress_for_pyrogram, progress_args=args)
 
-    return await client.send_document(
-        job.user_id,
-        path,
-        caption=None,
-        progress=progress_for_pyrogram,
-        progress_args=args,
-    )
+    return await client.send_document(job.user_id, path, caption=None, progress=progress_for_pyrogram, progress_args=args)
 
 
 async def _run(client, job, status, name: str, kind: str, convert: bool):
@@ -102,21 +105,18 @@ async def _run(client, job, status, name: str, kind: str, convert: bool):
     if not source:
         raise RuntimeError("Original file message is no longer available")
 
-    await status.edit_text("📥 **Downloading...**", reply_markup=cancel(job.job_id))
+    await _safe_edit(status, "📥 **Downloading...**", reply_markup=cancel(job.job_id))
     await download_job(client, source, job, status)
 
     output = os.path.join(job.work_dir, name)
     if convert:
-        # Conversion is intentionally silent. The user requested no
-        # "Processing..." message; after conversion completes we show only
-        # the upload state.
         ext = os.path.splitext(name)[1].lstrip(".").lower()
         if not await convert_media(job.input_path, output, ext):
             raise RuntimeError("FFmpeg conversion failed")
     else:
         os.replace(job.input_path, output)
 
-    await status.edit_text("📤 **Uploading... 0%**", reply_markup=cancel(job.job_id))
+    await _safe_edit(status, "📤 **Uploading... 0%**", reply_markup=cancel(job.job_id))
     await _send_result(client, job, output, name, status, kind)
     await db.update_usage(job.user_id, job.bot_id, os.path.getsize(output))
 
@@ -176,8 +176,6 @@ async def convert_type_v2(client, cb):
 
 @Client.on_message(filters.private & filters.text, group=-1400)
 async def filename_v2(client, message):
-    # Never consume commands as filenames. In particular, /start must remain
-    # usable while another file is waiting in the per-user FIFO queue.
     if (message.text or "").strip().startswith("/"):
         return
 
@@ -218,7 +216,7 @@ async def filename_v2(client, message):
 
     except AniToonTransferCancelled:
         try:
-            await status.edit_text("❌ **Processing cancelled.**")
+            await _safe_edit(status, "❌ **Processing cancelled.**")
         except Exception:
             pass
         clear_transfer_cancel(job.job_id)
@@ -226,7 +224,7 @@ async def filename_v2(client, message):
         await jobs.remove(job.job_id)
     except Exception as exc:
         try:
-            await status.edit_text(f"❌ **Processing failed**\n\n`{str(exc)[:1200]}`")
+            await _safe_edit(status, f"❌ **Processing failed**\n\n`{str(exc)[:1200]}`")
         except Exception:
             pass
         clear_transfer_cancel(job.job_id)
