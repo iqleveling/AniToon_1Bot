@@ -25,6 +25,12 @@ def clear_transfer_cancel(job_id: str):
         _LAST_PROGRESS_UPDATE.pop(key, None)
 
 
+def reset_progress(job_id: str):
+    """Allow the next transfer stage to update immediately."""
+    if job_id:
+        _LAST_PROGRESS_UPDATE.pop(str(job_id), None)
+
+
 def is_transfer_cancelled(job_id: str) -> bool:
     return bool(job_id and str(job_id) in _CANCELLED_TRANSFERS)
 
