@@ -19,11 +19,21 @@ async def fix_metadata(input_file, output_file, audio_name=DEFAULT_METADATA_NAME
 
 
 async def make_streamable(input_file, output_file):
-    """Put MP4/MOV metadata at the beginning for Telegram streaming."""
+    """Remux an MP4/MOV with faststart while preserving the requested filename."""
+    requested = output_file
+    if os.path.basename(output_file) in {"telegram_streamable.mp4", "streamable.mp4"}:
+        output_file = os.path.join(os.path.dirname(output_file), os.path.basename(input_file))
+        if os.path.abspath(output_file) == os.path.abspath(input_file):
+            output_file = os.path.join(os.path.dirname(output_file), ".streamable." + os.path.basename(input_file))
     cmd = ["ffmpeg", "-y", "-i", input_file, "-map", "0", "-c", "copy", "-movflags", "+faststart", output_file]
     process = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
     _, stderr = await process.communicate()
     if process.returncode == 0 and os.path.isfile(output_file):
+        if requested != output_file and os.path.abspath(input_file) != os.path.abspath(output_file):
+            try:
+                os.remove(requested)
+            except FileNotFoundError:
+                pass
         return output_file
     logging.error("FFmpeg Streamable Error: %s", stderr.decode(errors="ignore"))
     return None
@@ -105,13 +115,7 @@ async def convert_media(input_file, output_file, output_format: str):
         raise ValueError("Unsupported output format")
 
     if output_format == "mp4":
-        cmd = [
-            "ffmpeg", "-y", "-i", input_file,
-            "-map", "0:v:0?", "-map", "0:a?",
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
-            "-c:a", "aac", "-movflags", "+faststart", "-pix_fmt", "yuv420p",
-            output_file,
-        ]
+        cmd = ["ffmpeg", "-y", "-i", input_file, "-map", "0:v:0?", "-map", "0:a?", "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-c:a", "aac", "-movflags", "+faststart", "-pix_fmt", "yuv420p", output_file]
     else:
         cmd = ["ffmpeg", "-y", "-i", input_file]
         if output_format == "webm":
