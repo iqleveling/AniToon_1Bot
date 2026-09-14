@@ -24,16 +24,15 @@ async def _source(client, message, job):
 
 
 async def _upload_with_retry(send_func, *, path, caption, status, job_id, **kwargs):
-    """Upload with safe retries for transient Telegram/network failures."""
+    """Retry only transient Telegram/network failures without hiding upload errors."""
     last_error = None
     for attempt in range(1, 4):
         try:
-            # Do not clear a cancellation requested by the user between retries.
             return await send_func(
                 path,
                 caption=caption,
                 progress=progress_for_pyrogram,
-                progress_args=("📤 Uploading", status, time.time(), job_id),
+                progress_args=("Uploading", status, time.time(), job_id),
                 **kwargs,
             )
         except AniToonTransferCancelled:
@@ -42,16 +41,20 @@ async def _upload_with_retry(send_func, *, path, caption, status, job_id, **kwar
             last_error = exc
             if attempt < 3:
                 await asyncio.sleep(max(1, int(exc.value)))
-        except (RPCError, OSError, TimeoutError, asyncio.TimeoutError, ConnectionError) as exc:
+        except (OSError, TimeoutError, asyncio.TimeoutError, ConnectionError) as exc:
             last_error = exc
             if attempt < 3:
                 await asyncio.sleep(1.5 * attempt)
-        except Exception as exc:
-            # Telegram/Pyrogram can surface transport failures through different
-            # exception classes depending on where the connection breaks.
+        except RPCError as exc:
+            # Bad media/container errors are not useful to retry. Other RPC
+            # errors can be transient, so give them a short retry window.
             last_error = exc
-            if attempt < 3:
+            text = str(exc).lower()
+            retryable = any(word in text for word in ("timeout", "connection", "tempor", "network", "server"))
+            if attempt < 3 and retryable:
                 await asyncio.sleep(1.5 * attempt)
+            else:
+                break
     raise last_error or RuntimeError("Telegram upload failed")
 
 
@@ -73,10 +76,12 @@ async def _send_file(client, job, path, filename, status):
             )
         except AniToonTransferCancelled:
             raise
-        except Exception:
-            # If Telegram rejects the video container, retry the completed file
-            # as a document rather than reporting a false processing failure.
-            pass
+        except RPCError as exc:
+            # Only a Telegram media-validation RPC error should trigger a
+            # document fallback. Network failures must not restart from zero.
+            text = str(exc).lower()
+            if not any(word in text for word in ("video", "media", "document", "mime", "codec", "thumbnail")):
+                raise
 
     if is_audio:
         try:
@@ -90,8 +95,10 @@ async def _send_file(client, job, path, filename, status):
             )
         except AniToonTransferCancelled:
             raise
-        except Exception:
-            pass
+        except RPCError as exc:
+            text = str(exc).lower()
+            if not any(word in text for word in ("audio", "media", "document", "mime", "codec", "thumbnail")):
+                raise
 
     return await _upload_with_retry(
         client.send_document,
@@ -111,7 +118,7 @@ async def deferred_rename(client, cb):
         raise StopPropagation
     await cb.answer()
     await jobs.update(job.job_id, selected_action="custom_name", extra={**job.extra, "rename_output_mode": "file"})
-    await cb.message.edit_text("✏️ **Rename**\n\nSend me the new filename.", reply_markup=cancel_markup(job.job_id))
+    await cb.message.edit_text("Enter new filename:", reply_markup=cancel_markup(job.job_id))
     raise StopPropagation
 
 
@@ -161,7 +168,7 @@ async def deferred_name(client, message):
         await message.reply_text("❌ **Please send a valid filename.**")
         raise StopPropagation
 
-    status = await message.reply_text("⏳ **Processing...**", reply_markup=cancel_markup(job.job_id))
+    status = await message.reply_text("Downloading...", reply_markup=cancel_markup(job.job_id))
     try:
         source = await _source(client, message, job)
         await download_job(client, source, job, status)
@@ -173,29 +180,35 @@ async def deferred_name(client, message):
             name = _safe_filename(text)
             if _extension(name) != ext:
                 name = f"{_base_without_extension(name)}.{ext}"
-            output_path = os.path.join(job.work_dir, name)
             await status.edit_text("⚙️ **Processing...**", reply_markup=cancel_markup(job.job_id))
-            if not await convert_media(job.input_path, output_path, ext):
+            if not await convert_media(job.input_path, os.path.join(job.work_dir, name), ext):
                 raise RuntimeError("FFmpeg conversion failed")
+            output_path = os.path.join(job.work_dir, name)
             await _send_file(client, job, output_path, name, status)
         else:
             ext = _extension(job.original_name)
             name = text
-            if not _extension(name) and ext:
-                name = f"{name}.{ext}"
-            elif _extension(name) and ext:
-                name = f"{_base_without_extension(name)}.{ext}"
+            if _extension(name) != ext:
+                name = f"{_base_without_extension(name)}.{ext}" if ext else name
             output_path = os.path.join(job.work_dir, name)
-            if output_path != job.input_path:
-                os.replace(job.input_path, output_path)
+            os.replace(job.input_path, output_path)
             await _send_file(client, job, output_path, name, status)
 
-        await db.update_usage(job.user_id, job.bot_id, int(job.extra.get("downloaded_size", os.path.getsize(job.input_path) if os.path.exists(job.input_path) else 0)))
-        await status.edit_text(f"✅ **Processing Complete!**\n\n📂 `{name}`")
+        input_size = int(job.extra.get("downloaded_size", 0) or 0)
+        await db.update_usage(job.user_id, job.bot_id, input_size)
+        await status.edit_text(
+            f"✅ **Processing Complete!**\n\n📂 `{name}`\n📦 `{humanbytes(os.path.getsize(output_path))}`"
+        )
     except AniToonTransferCancelled:
-        await status.edit_text("❌ **Processing cancelled.**")
+        try:
+            await status.edit_text("❌ **Processing cancelled.**")
+        except Exception:
+            pass
     except Exception as exc:
-        await status.edit_text(f"❌ **Processing failed**\n\n`{str(exc)[:1000]}`")
+        try:
+            await status.edit_text(f"❌ **Processing failed**\n\n`{str(exc)[:1000]}`")
+        except Exception:
+            pass
     finally:
         clear_transfer_cancel(job.job_id)
         shutil.rmtree(job.work_dir, ignore_errors=True)
@@ -209,11 +222,24 @@ async def deferred_cancel(client, cb):
     if not job or job.user_id != cb.from_user.id:
         await cb.answer("This file job is no longer active.", show_alert=True)
         raise StopPropagation
+
     from helper.utils import request_transfer_cancel
     request_transfer_cancel(job.job_id)
-    try:
-        await cb.message.edit_text("❌ **Cancelling processing...**")
-    except Exception:
-        pass
-    await cb.answer("Cancelling...")
+
+    # A waiting job has no transfer callback running, so remove it immediately.
+    if not os.path.exists(job.input_path):
+        await jobs.remove(job.job_id)
+        shutil.rmtree(job.work_dir, ignore_errors=True)
+        clear_transfer_cancel(job.job_id)
+        try:
+            await cb.message.edit_text("❌ **Processing cancelled.**")
+        except Exception:
+            pass
+    else:
+        try:
+            await cb.message.edit_text("❌ **Cancelling processing...**")
+        except Exception:
+            pass
+
+    await cb.answer("Cancelled" if not os.path.exists(job.input_path) else "Cancelling...")
     raise StopPropagation
