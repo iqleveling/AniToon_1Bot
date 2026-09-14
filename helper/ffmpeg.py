@@ -9,6 +9,7 @@ DEFAULT_METADATA_NAME = "AniToon Official"
 async def fix_metadata(input_file, output_file, audio_name=DEFAULT_METADATA_NAME, subtitle_name=DEFAULT_METADATA_NAME):
     audio_name = str(audio_name).strip() or DEFAULT_METADATA_NAME
     subtitle_name = str(subtitle_name).strip() or DEFAULT_METADATA_NAME
+    subtitle_name = str(subtitle_name).strip() or DEFAULT_METADATA_NAME
     cmd = ["ffmpeg", "-y", "-i", input_file, "-map", "0", "-c", "copy", "-metadata", f"title={audio_name}", "-metadata:s:a", f"title={audio_name}", "-metadata:s:s", f"title={subtitle_name}", output_file]
     process = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
     _, stderr = await process.communicate()
@@ -19,22 +20,24 @@ async def fix_metadata(input_file, output_file, audio_name=DEFAULT_METADATA_NAME
 
 
 async def make_streamable(input_file, output_file):
-    """Remux an MP4/MOV with faststart while preserving the requested filename."""
-    requested = output_file
-    if os.path.basename(output_file) in {"telegram_streamable.mp4", "streamable.mp4"}:
-        output_file = os.path.join(os.path.dirname(output_file), os.path.basename(input_file))
-        if os.path.abspath(output_file) == os.path.abspath(input_file):
-            output_file = os.path.join(os.path.dirname(output_file), ".streamable." + os.path.basename(input_file))
-    cmd = ["ffmpeg", "-y", "-i", input_file, "-map", "0", "-c", "copy", "-movflags", "+faststart", output_file]
+    """Remux with faststart and keep the requested/user-visible filename."""
+    target = output_file
+    same_name = os.path.abspath(target) == os.path.abspath(input_file)
+    if same_name:
+        target = os.path.join(os.path.dirname(input_file), ".streamable." + os.path.basename(input_file))
+    elif os.path.basename(target) in {"telegram_streamable.mp4", "streamable.mp4"}:
+        target = os.path.join(os.path.dirname(target), os.path.basename(input_file))
+        if os.path.abspath(target) == os.path.abspath(input_file):
+            target = os.path.join(os.path.dirname(input_file), ".streamable." + os.path.basename(input_file))
+
+    cmd = ["ffmpeg", "-y", "-i", input_file, "-map", "0", "-c", "copy", "-movflags", "+faststart", target]
     process = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
     _, stderr = await process.communicate()
-    if process.returncode == 0 and os.path.isfile(output_file):
-        if requested != output_file and os.path.abspath(input_file) != os.path.abspath(output_file):
-            try:
-                os.remove(requested)
-            except FileNotFoundError:
-                pass
-        return output_file
+    if process.returncode == 0 and os.path.isfile(target):
+        if same_name:
+            os.replace(target, input_file)
+            return input_file
+        return target
     logging.error("FFmpeg Streamable Error: %s", stderr.decode(errors="ignore"))
     return None
 
