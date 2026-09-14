@@ -9,7 +9,6 @@ import time
 
 from pyrogram import Client, StopPropagation, filters
 from pyrogram.errors import FloodWait, RPCError
-from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from helper.database import db
 from helper.ffmpeg import convert_media
@@ -114,7 +113,7 @@ async def deferred_rename_format(client, cb):
         extra={**job.extra, "rename_output_mode": mode},
     )
     await cb.message.edit_text(
-        f"✏️ **Rename → {mode.title()}**\n\nEnter the new filename:",
+        f"✏️ **Rename → {mode.title()}**\n\nEnter the new filename:\n\nReply to this message or simply send the filename.",
         reply_markup=cancel_markup(job.job_id),
     )
     raise StopPropagation
@@ -156,9 +155,14 @@ async def deferred_advanced(client, cb):
     raise StopPropagation
 
 
-@Client.on_message(filters.private & filters.reply & filters.text, group=-5000)
+@Client.on_message(filters.private & filters.text, group=-5000)
 async def deferred_name(client, message):
-    job = await jobs.get_user_job(message.from_user.id)
+    """Accept the filename as a normal text message or a Telegram reply."""
+    user = getattr(message, "from_user", None)
+    if not user:
+        return
+
+    job = await jobs.get_user_job(user.id)
     if not job or job.selected_action not in {"custom_name", "convert_name"}:
         return
 
