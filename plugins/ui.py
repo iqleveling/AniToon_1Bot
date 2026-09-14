@@ -49,8 +49,10 @@ def thumbnail_menu():
 
 
 def file_action_menu(job_id: str):
+    """Choose the operation BEFORE the bot downloads the file."""
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("✏️ Rename", callback_data=f"job:rename:{job_id}"), InlineKeyboardButton("🛠 Advanced", callback_data=f"job:advanced:{job_id}")],
+        [InlineKeyboardButton("✏️ Rename", callback_data=f"job:rename:{job_id}"), InlineKeyboardButton("🔄 Convert", callback_data=f"job:convert:{job_id}")],
+        [InlineKeyboardButton("🛠 Advanced", callback_data=f"job:advanced:{job_id}")],
         [InlineKeyboardButton("❌ Cancel", callback_data=f"job:cancel:{job_id}")],
     ])
 
@@ -63,12 +65,8 @@ def rename_format_menu(job_id: str):
 
 
 def rename_output_menu(job_id: str):
-    """Choose whether a renamed file stays a Telegram document or becomes MP4 video."""
     return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("📄 Convert into File", callback_data=f"renameoutput:{job_id}:file"),
-            InlineKeyboardButton("🎬 Convert into Video", callback_data=f"renameoutput:{job_id}:video"),
-        ],
+        [InlineKeyboardButton("📄 Convert into File", callback_data=f"renameoutput:{job_id}:file"), InlineKeyboardButton("🎬 Convert into Video", callback_data=f"renameoutput:{job_id}:video")],
         [InlineKeyboardButton("❌ Cancel", callback_data=f"job:cancel:{job_id}")],
     ])
 
