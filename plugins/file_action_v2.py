@@ -21,60 +21,47 @@ AUDIO_MIME = {"mp3": "audio/mpeg", "m4a": "audio/mp4"}
 
 
 async def _send(client, job, path, filename, status):
-    """Send renamed/converted output using the correct Telegram media type."""
     ext = _extension(filename)
     reset_progress(job.job_id)
     args = ("Uploading", status, time.time(), job.job_id)
-
     if not os.path.isfile(path) or os.path.getsize(path) <= 0:
         raise RuntimeError("Output file is missing or empty")
 
     if (job.mime_type or "").startswith("video/") or ext in VIDEO_EXTENSIONS:
         duration, width, height = await get_video_info(path)
         if not duration or not width or not height:
-            raise RuntimeError("Output is not a valid video with duration and dimensions")
-
+            raise RuntimeError("Output video metadata could not be read")
         upload_path = path
-        if not path.lower().endswith(".mp4"):
-            stream_path = os.path.join(job.work_dir, "streamable.mp4")
-            ready = await make_streamable(path, stream_path)
-            if ready:
-                upload_path = ready
-                duration, width, height = await get_video_info(upload_path)
-
-        if not os.path.isfile(upload_path) or os.path.getsize(upload_path) <= 0:
-            raise RuntimeError("Video preparation completed without a usable output file")
-        if not duration or not width or not height:
-            raise RuntimeError("Could not prepare a valid Telegram video")
-
-        return await client.send_video(
-            job.user_id,
-            upload_path,
-            caption=None,
-            duration=max(1, int(round(duration))),
-            width=int(width),
-            height=int(height),
-            supports_streaming=True,
-            progress=progress_for_pyrogram,
-            progress_args=args,
-        )
+        stream_path = os.path.join(job.work_dir, ".telegram_streamable.mp4")
+        ready = await make_streamable(path, stream_path)
+        if ready and os.path.isfile(ready) and os.path.getsize(ready) > 0:
+            upload_path = ready
+            duration, width, height = await get_video_info(upload_path)
+        try:
+            return await client.send_video(
+                job.user_id,
+                upload_path,
+                caption=None,
+                duration=max(1, int(round(duration))),
+                width=int(width),
+                height=int(height),
+                supports_streaming=True,
+                progress=progress_for_pyrogram,
+                progress_args=args,
+            )
+        except Exception as exc:
+            raise RuntimeError(f"Video upload failed: {str(exc)[:1000]}") from exc
 
     if (job.mime_type or "").startswith("audio/") or ext in {"mp3", "m4a", "aac", "flac", "ogg", "wav", "opus"}:
-        return await client.send_audio(
-            job.user_id,
-            path,
-            caption=None,
-            progress=progress_for_pyrogram,
-            progress_args=args,
-        )
+        try:
+            return await client.send_audio(job.user_id, path, caption=None, progress=progress_for_pyrogram, progress_args=args)
+        except Exception as exc:
+            raise RuntimeError(f"Audio upload failed: {str(exc)[:1000]}") from exc
 
-    return await client.send_document(
-        job.user_id,
-        path,
-        caption=None,
-        progress=progress_for_pyrogram,
-        progress_args=args,
-    )
+    try:
+        return await client.send_document(job.user_id, path, caption=None, progress=progress_for_pyrogram, progress_args=args)
+    except Exception as exc:
+        raise RuntimeError(f"Document upload failed: {str(exc)[:1000]}") from exc
 
 
 async def _cleanup(job):
