@@ -72,43 +72,7 @@ async def progress_for_pyrogram(
     start,
     job_id=None,
 ):
-    """Clean download/upload progress with a Cancel button."""
+    """Very light progress callback: no progress bar/message spam; only cancel detection."""
     if job_id and is_transfer_cancelled(job_id):
         raise AniToonTransferCancelled("Transfer cancelled by user")
-    if not total:
-        return
-
-    now = time.time()
-    diff = max(now - start, 0.001)
-    if diff < 1 and current != total:
-        return
-
-    percentage = min(100.0, current * 100 / total)
-    speed = current / diff
-    remaining = max(total - current, 0)
-    eta_seconds = remaining / speed if speed > 0 else 0
-    bar = _progress_bar(percentage)
-    stage = str(ud_type or "📥 Downloading")
-    if not stage.startswith(("📥", "📤")):
-        stage = f"📥 {stage}"
-
-    text = (
-        f"**{stage}**\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"[{bar}] {percentage:.0f}%\n\n"
-        f"📦 **Size:** {humanbytes(current)} / {humanbytes(total)}\n"
-        f"🚀 **Speed:** {humanbytes(speed)}/s\n"
-        f"⏳ **ETA:** {time_formatter(eta_seconds * 1000)}\n"
-        f"⏱️ **Elapsed:** {time_formatter(diff * 1000)}"
-    )
-
-    markup = None
-    if job_id:
-        markup = InlineKeyboardMarkup([
-            [InlineKeyboardButton("❌ Cancel", callback_data=f"transfer:cancel:{job_id}")]
-        ])
-
-    try:
-        await message.edit_text(text, reply_markup=markup)
-    except Exception:
-        pass
+    return
