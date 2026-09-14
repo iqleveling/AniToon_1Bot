@@ -8,10 +8,10 @@ from pyrogram import Client, StopPropagation, filters
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from helper.database import db
-from helper.ffmpeg import convert_media
+from helper.ffmpeg import convert_media, get_video_info, make_streamable
 from helper.job_state import jobs
 from helper.job_transfer import download_job
-from helper.utils import AniToonTransferCancelled, clear_transfer_cancel, humanbytes
+from helper.utils import AniToonTransferCancelled, clear_transfer_cancel, humanbytes, progress_for_pyrogram, reset_progress
 from plugins.rename import _base_without_extension, _extension, _safe_filename
 from plugins.ui import rename_format_menu
 
@@ -21,20 +21,60 @@ AUDIO_MIME = {"mp3": "audio/mpeg", "m4a": "audio/mp4"}
 
 
 async def _send(client, job, path, filename, status):
+    """Send renamed/converted output using the correct Telegram media type."""
     ext = _extension(filename)
-    caption = f"✅ **AniToon Processed**\n\n📂 `{filename}`\n📦 `{humanbytes(os.path.getsize(path))}`"
-    args = ("📤 Uploading", status, time.time(), job.job_id)
+    reset_progress(job.job_id)
+    args = ("Uploading", status, time.time(), job.job_id)
+
+    if not os.path.isfile(path) or os.path.getsize(path) <= 0:
+        raise RuntimeError("Output file is missing or empty")
+
     if (job.mime_type or "").startswith("video/") or ext in VIDEO_EXTENSIONS:
-        try:
-            return await client.send_video(job.user_id, path, caption=caption, supports_streaming=True, progress=None)
-        except Exception:
-            return await client.send_document(job.user_id, path, caption=caption)
+        duration, width, height = await get_video_info(path)
+        if not duration or not width or not height:
+            raise RuntimeError("Output is not a valid video with duration and dimensions")
+
+        upload_path = path
+        if not path.lower().endswith(".mp4"):
+            stream_path = os.path.join(job.work_dir, "streamable.mp4")
+            ready = await make_streamable(path, stream_path)
+            if ready:
+                upload_path = ready
+                duration, width, height = await get_video_info(upload_path)
+
+        if not os.path.isfile(upload_path) or os.path.getsize(upload_path) <= 0:
+            raise RuntimeError("Video preparation completed without a usable output file")
+        if not duration or not width or not height:
+            raise RuntimeError("Could not prepare a valid Telegram video")
+
+        return await client.send_video(
+            job.user_id,
+            upload_path,
+            caption=None,
+            duration=max(1, int(round(duration))),
+            width=int(width),
+            height=int(height),
+            supports_streaming=True,
+            progress=progress_for_pyrogram,
+            progress_args=args,
+        )
+
     if (job.mime_type or "").startswith("audio/") or ext in {"mp3", "m4a", "aac", "flac", "ogg", "wav", "opus"}:
-        try:
-            return await client.send_audio(job.user_id, path, caption=caption, progress=None)
-        except Exception:
-            return await client.send_document(job.user_id, path, caption=caption)
-    return await client.send_document(job.user_id, path, caption=caption)
+        return await client.send_audio(
+            job.user_id,
+            path,
+            caption=None,
+            progress=progress_for_pyrogram,
+            progress_args=args,
+        )
+
+    return await client.send_document(
+        job.user_id,
+        path,
+        caption=None,
+        progress=progress_for_pyrogram,
+        progress_args=args,
+    )
 
 
 async def _cleanup(job):
@@ -99,14 +139,13 @@ async def filename_reply(client, message):
     if not text:
         await message.reply_text("❌ Please send a valid filename.")
         raise StopPropagation
-    status = await message.reply_text("📥 **Starting download...**")
+    status = await message.reply_text("📥 **Downloading...**")
     try:
         await _download(client, job, status)
         if job.selected_action == "convert_name":
             ext = job.output_ext
             name = f"{_base_without_extension(text)}.{ext}"
             output = os.path.join(job.work_dir, name)
-            await status.edit_text(f"⚙️ **Converting to {ext.upper()}...**")
             if not await convert_media(job.input_path, output, ext):
                 raise RuntimeError("FFmpeg conversion failed")
         else:
@@ -114,7 +153,6 @@ async def filename_reply(client, message):
             if mode == "video":
                 name = f"{_base_without_extension(text)}.mp4"
                 output = os.path.join(job.work_dir, name)
-                await status.edit_text("🎬 **Creating a real MP4 video...**")
                 if not await convert_media(job.input_path, output, "mp4"):
                     raise RuntimeError("Could not create a valid MP4 video")
                 job.mime_type = "video/mp4"
@@ -124,12 +162,21 @@ async def filename_reply(client, message):
                 output = os.path.join(job.work_dir, name)
                 os.replace(job.input_path, output)
         await _send(client, job, output, name, status)
-        await db.update_usage(job.user_id, job.bot_id, os.path.getsize(output if not os.path.exists(job.input_path) else job.input_path))
-        await status.edit_text(f"✅ **Completed!**\n\n📂 `{name}`\n📦 `{humanbytes(os.path.getsize(output))}`")
+        await db.update_usage(job.user_id, job.bot_id, os.path.getsize(output))
+        try:
+            await status.delete()
+        except Exception:
+            pass
     except AniToonTransferCancelled:
-        await status.edit_text("❌ **Processing cancelled.**")
+        try:
+            await status.edit_text("❌ **Processing cancelled.**")
+        except Exception:
+            pass
     except Exception as exc:
-        await status.edit_text(f"❌ **Processing failed**\n\n`{str(exc)[:1200]}`")
+        try:
+            await status.edit_text(f"❌ **Processing failed**\n\n`{str(exc)[:1200]}`")
+        except Exception:
+            pass
     finally:
         await _cleanup(job)
     raise StopPropagation
