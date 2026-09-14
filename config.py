@@ -51,22 +51,30 @@ class Config:
         "START_PIC", ""
     ).strip()
 
-    # Progress-bar characters used by helper.utils.progress_for_pyrogram.
+    # Progress display characters are kept for backwards compatibility. The
+    # active transfer UI intentionally uses numeric stats without a bar.
     COMPLETED_STR = os.getenv("COMPLETED_STR", "▰")
     REMAINING_STR = os.getenv("REMAINING_STR", "▱")
 
-    # Performance controls. The defaults are deliberately moderate so a single
-    # Render instance can serve several users without saturating its network.
-    # Pyrogram defaults max_concurrent_transmissions to 1; raising it helps
-    # throughput when several users are transferring files at the same time.
+    # Keep up to 20 user jobs registered, but only transfer a small number at
+    # once. This keeps Telegram responses responsive on small Render instances.
+    MAX_ACTIVE_JOBS = max(
+        1, int(os.getenv("MAX_ACTIVE_JOBS", "20"))
+    )
     MAX_CONCURRENT_TRANSMISSIONS = max(
-        1, int(os.getenv("MAX_CONCURRENT_TRANSMISSIONS", "4"))
+        1, int(os.getenv("MAX_CONCURRENT_TRANSMISSIONS", "3"))
     )
 
-    # Fast FFmpeg preset for CPU-only hosts. Set FFMPEG_PRESET=faster/veryfast
-    # if you prefer smaller output files over maximum conversion speed.
+    # Limit CPU-heavy FFmpeg work independently from Telegram transfers.
+    MAX_CONCURRENT_PROCESSING = max(
+        1, int(os.getenv("MAX_CONCURRENT_PROCESSING", "2"))
+    )
+
     FFMPEG_PRESET = os.getenv("FFMPEG_PRESET", "ultrafast").strip() or "ultrafast"
     FFMPEG_THREADS = max(0, int(os.getenv("FFMPEG_THREADS", "0")))
+
+    # One progress edit roughly every 1.5s is enough for a smooth UI without
+    # flooding Telegram with edits or stealing time from the file transfer.
     PROGRESS_UPDATE_INTERVAL = max(
-        0.5, float(os.getenv("PROGRESS_UPDATE_INTERVAL", "0.8"))
+        1.0, float(os.getenv("PROGRESS_UPDATE_INTERVAL", "1.5"))
     )
