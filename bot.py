@@ -7,9 +7,8 @@ from pyrogram.types import BotCommand
 
 from config import Config
 from helper.clone_manager import CloneManager
-# Install the invisible FIFO queue before Pyrogram loads the plugin handlers.
+from helper.message_cleanup import install_auto_cleanup
 import helper.auto_queue  # noqa: F401
-
 
 logging.basicConfig(
     level=logging.INFO,
@@ -17,9 +16,6 @@ logging.basicConfig(
 )
 log = logging.getLogger("AniToon")
 
-
-# Public commands. File processing remains primarily inline through the UI.
-# Queue controls are intentionally not exposed to users.
 BOT_COMMANDS = [
     BotCommand("start", "Open AniToon"),
     BotCommand("help", "Show help"),
@@ -45,7 +41,6 @@ class Bot(Client):
         self.clone_manager = None
 
     async def _setup_commands(self):
-        """Reset Telegram's command menu and expose only working public commands."""
         try:
             await self.delete_bot_commands()
             await self.set_bot_commands(BOT_COMMANDS)
@@ -60,6 +55,7 @@ class Bot(Client):
                 me = await self.get_me()
                 self.bot_id = me.id
                 self.bot_username = me.username
+                install_auto_cleanup(self)
                 log.info("Main bot started: @%s (ID: %s)", me.username or "unknown", me.id)
                 log.info("Telegram transfer concurrency: %s", Config.MAX_CONCURRENT_TRANSMISSIONS)
                 await self._setup_commands()
