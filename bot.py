@@ -7,6 +7,8 @@ from pyrogram.types import BotCommand
 
 from config import Config
 from helper.clone_manager import CloneManager
+# Install the invisible FIFO queue before Pyrogram loads the plugin handlers.
+import helper.auto_queue  # noqa: F401
 
 
 logging.basicConfig(
@@ -17,6 +19,7 @@ log = logging.getLogger("AniToon")
 
 
 # Public commands. File processing remains primarily inline through the UI.
+# Queue controls are intentionally not exposed to users.
 BOT_COMMANDS = [
     BotCommand("start", "Open AniToon"),
     BotCommand("help", "Show help"),
