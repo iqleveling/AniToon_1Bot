@@ -9,7 +9,6 @@ DEFAULT_METADATA_NAME = "AniToon Official"
 async def fix_metadata(input_file, output_file, audio_name=DEFAULT_METADATA_NAME, subtitle_name=DEFAULT_METADATA_NAME):
     audio_name = str(audio_name).strip() or DEFAULT_METADATA_NAME
     subtitle_name = str(subtitle_name).strip() or DEFAULT_METADATA_NAME
-    subtitle_name = str(subtitle_name).strip() or DEFAULT_METADATA_NAME
     cmd = ["ffmpeg", "-y", "-i", input_file, "-map", "0", "-c", "copy", "-metadata", f"title={audio_name}", "-metadata:s:a", f"title={audio_name}", "-metadata:s:s", f"title={subtitle_name}", output_file]
     process = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
     _, stderr = await process.communicate()
@@ -20,21 +19,21 @@ async def fix_metadata(input_file, output_file, audio_name=DEFAULT_METADATA_NAME
 
 
 async def make_streamable(input_file, output_file):
-    """Remux with faststart and keep the requested/user-visible filename."""
+    """Remux with faststart while preserving the chosen/user-visible filename."""
     target = output_file
-    same_name = os.path.abspath(target) == os.path.abspath(input_file)
-    if same_name:
-        target = os.path.join(os.path.dirname(input_file), ".streamable." + os.path.basename(input_file))
-    elif os.path.basename(target) in {"telegram_streamable.mp4", "streamable.mp4"}:
+    replace_input = os.path.abspath(target) == os.path.abspath(input_file)
+    if os.path.basename(target) in {"telegram_streamable.mp4", "streamable.mp4"}:
         target = os.path.join(os.path.dirname(target), os.path.basename(input_file))
         if os.path.abspath(target) == os.path.abspath(input_file):
-            target = os.path.join(os.path.dirname(input_file), ".streamable." + os.path.basename(input_file))
+            replace_input = True
+    if replace_input:
+        target = os.path.join(os.path.dirname(input_file), ".streamable." + os.path.basename(input_file))
 
     cmd = ["ffmpeg", "-y", "-i", input_file, "-map", "0", "-c", "copy", "-movflags", "+faststart", target]
     process = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
     _, stderr = await process.communicate()
     if process.returncode == 0 and os.path.isfile(target):
-        if same_name:
+        if replace_input:
             os.replace(target, input_file)
             return input_file
         return target
