@@ -8,7 +8,7 @@ import shutil
 import time
 
 from pyrogram import Client, StopPropagation, filters
-from pyrogram.errors import RPCError
+from pyrogram.errors import FloodWait, RPCError
 
 from helper.database import db
 from helper.ffmpeg import convert_media
@@ -16,7 +16,7 @@ from helper.job_state import jobs
 from helper.job_transfer import cancel_markup, download_job
 from helper.utils import AniToonTransferCancelled, clear_transfer_cancel, humanbytes, progress_for_pyrogram
 from plugins.rename import _base_without_extension, _extension, _safe_filename
-from plugins.ui import advanced_menu, convert_menu, rename_output_menu
+from plugins.ui import advanced_menu, convert_menu
 
 
 async def _source(client, message, job):
@@ -24,16 +24,11 @@ async def _source(client, message, job):
 
 
 async def _upload_with_retry(send_func, *, path, caption, status, job_id, **kwargs):
-    """Upload with retries for transient Telegram/network failures.
-
-    A failure near 100% can otherwise leave the bot looking stuck even though the
-    local file is complete. Retrying the same file is preferable to immediately
-    switching media types, which can restart the upload unnecessarily.
-    """
+    """Upload with safe retries for transient Telegram/network failures."""
     last_error = None
     for attempt in range(1, 4):
         try:
-            clear_transfer_cancel(job_id)
+            # Do not clear a cancellation requested by the user between retries.
             return await send_func(
                 path,
                 caption=caption,
@@ -43,12 +38,20 @@ async def _upload_with_retry(send_func, *, path, caption, status, job_id, **kwar
             )
         except AniToonTransferCancelled:
             raise
-        except RPCError as exc:
+        except FloodWait as exc:
             last_error = exc
-        except (OSError, TimeoutError, asyncio.TimeoutError, ConnectionError) as exc:
+            if attempt < 3:
+                await asyncio.sleep(max(1, int(exc.value)))
+        except (RPCError, OSError, TimeoutError, asyncio.TimeoutError, ConnectionError) as exc:
             last_error = exc
-        if attempt < 3:
-            await asyncio.sleep(1.5 * attempt)
+            if attempt < 3:
+                await asyncio.sleep(1.5 * attempt)
+        except Exception as exc:
+            # Telegram/Pyrogram can surface transport failures through different
+            # exception classes depending on where the connection breaks.
+            last_error = exc
+            if attempt < 3:
+                await asyncio.sleep(1.5 * attempt)
     raise last_error or RuntimeError("Telegram upload failed")
 
 
@@ -71,8 +74,8 @@ async def _send_file(client, job, path, filename, status):
         except AniToonTransferCancelled:
             raise
         except Exception:
-            # Some containers/codecs are rejected by sendVideo. Retry as a
-            # document instead of losing the completed output.
+            # If Telegram rejects the video container, retry the completed file
+            # as a document rather than reporting a false processing failure.
             pass
 
     if is_audio:
