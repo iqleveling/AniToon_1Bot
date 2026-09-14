@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import urllib.error
+import urllib.parse
+import urllib.request
 
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from pyrogram.raw.types import UpdateBotPrecheckoutQuery, DataJSON
+from pyrogram.raw.types import UpdateBotPrecheckoutQuery
 from pyrogram.raw.functions.messages import SetBotPrecheckoutResults
-from pyrogram.raw.functions.bots import SendCustomRequest
 
 from config import Config
 from helper.database import db
@@ -90,19 +93,46 @@ async def upgrade_button(client, callback_query):
     await send_plan_menu(client, callback_query.from_user.id, bot_id)
 
 
+async def _bot_api(method: str, params: dict) -> dict:
+    """Call the Bot API directly; this avoids Pyrogram MTProto peer resolution for invoices."""
+    token = Config.BOT_TOKEN
+    if not token:
+        raise RuntimeError("BOT_TOKEN is not configured")
+    url = f"https://api.telegram.org/bot{token}/{method}"
+    body = urllib.parse.urlencode(params).encode("utf-8")
+
+    def request():
+        req = urllib.request.Request(
+            url,
+            data=body,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=20) as response:
+                raw = response.read().decode("utf-8", errors="replace")
+        except urllib.error.HTTPError as exc:
+            raw = exc.read().decode("utf-8", errors="replace")
+        return json.loads(raw)
+
+    result = await asyncio.to_thread(request)
+    if not result.get("ok"):
+        description = result.get("description") or "Telegram Bot API request failed"
+        raise RuntimeError(description)
+    return result
+
+
 async def _send_stars_invoice(client, user_id: int, plan, payload: str):
-    invoice = {
+    params = {
         "chat_id": int(user_id),
         "title": f"AniToon {plan.name}"[:32],
         "description": f"{plan.name} plan for 30 days. Daily limit: {humanbytes(plan.daily_limit)}."[:255],
         "payload": payload,
+        "provider_token": "",
         "currency": "XTR",
-        "prices": [{"label": plan.name[:32], "amount": int(plan.stars)}],
+        "prices": json.dumps([{"label": plan.name[:32], "amount": int(plan.stars)}], separators=(",", ":")),
     }
-    return await client.invoke(SendCustomRequest(
-        custom_method="sendInvoice",
-        params=DataJSON(data=json.dumps(invoice, separators=(",", ":"))),
-    ))
+    return await _bot_api("sendInvoice", params)
 
 
 @Client.on_callback_query(filters.regex(r"^buy:(pro|premium|ultra):(\d+)$"))
