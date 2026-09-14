@@ -53,7 +53,7 @@ def file_action_menu(job_id: str):
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("✏️ Rename", callback_data=f"job:rename:{job_id}"), InlineKeyboardButton("🔄 Convert", callback_data=f"job:convert:{job_id}")],
         [InlineKeyboardButton("🛠 Advanced", callback_data=f"job:advanced:{job_id}")],
-        [InlineKeyboardButton("❌ Cancel", callback_data=f"job:cancel:{job_id}")],
+        [InlineKeyboardButton("❌ Cancel", callback_data=f"transfer:cancel:{job_id}")],
     ])
 
 
@@ -67,7 +67,7 @@ def rename_format_menu(job_id: str):
 def rename_output_menu(job_id: str):
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📄 Convert into File", callback_data=f"renameoutput:{job_id}:file"), InlineKeyboardButton("🎬 Convert into Video", callback_data=f"renameoutput:{job_id}:video")],
-        [InlineKeyboardButton("❌ Cancel", callback_data=f"job:cancel:{job_id}")],
+        [InlineKeyboardButton("❌ Cancel", callback_data=f"transfer:cancel:{job_id}")],
     ])
 
 
