@@ -8,6 +8,25 @@ def is_owner(user_id: int) -> bool:
     return bool(Config.OWNER_ID and int(user_id) == int(Config.OWNER_ID))
 
 
+def owner_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🛠 Help", callback_data="help"), InlineKeyboardButton("⚙️ Settings", callback_data="settings")],
+        [InlineKeyboardButton("✏️ Rename", callback_data="start_rename")],
+        [InlineKeyboardButton("🤖 Create Your Own Clone Bot", callback_data="create_clone")],
+        [InlineKeyboardButton("👑 Owner Panel", callback_data="owner:panel")],
+    ])
+
+
+async def show_owner_home(message):
+    await message.edit_text(
+        "🔥 **Welcome to AniToon Bot** 🔥\n\n"
+        "👑 **Owner access detected**\n"
+        "⚡ Unlimited owner access\n\n"
+        "Use the owner controls below.",
+        reply_markup=owner_keyboard(),
+    )
+
+
 @Client.on_message(filters.private & filters.command("start"), group=-300)
 async def owner_start_page(client, message):
     if not getattr(client, "is_main_bot", False) or not is_owner(message.from_user.id):
@@ -17,12 +36,7 @@ async def owner_start_page(client, message):
         "👑 **Owner access detected**\n"
         "⚡ Unlimited owner access\n\n"
         "Use the owner controls below.",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🛠 Help", callback_data="help"), InlineKeyboardButton("⚙️ Settings", callback_data="settings")],
-            [InlineKeyboardButton("✏️ Rename", callback_data="start_rename")],
-            [InlineKeyboardButton("🤖 Create Your Own Clone Bot", callback_data="create_clone")],
-            [InlineKeyboardButton("👑 Owner Panel", callback_data="owner:panel")],
-        ]),
+        reply_markup=owner_keyboard(),
     )
     raise StopPropagation
 
@@ -44,4 +58,13 @@ async def owner_panel_entry(client, callback_query):
         "This panel is restricted to `Config.OWNER_ID`.",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Home", callback_data="start")]]),
     )
+    raise StopPropagation
+
+
+@Client.on_callback_query(filters.regex(r"^start$"), group=-300)
+async def owner_home_callback(client, callback_query):
+    if not getattr(client, "is_main_bot", False) or not is_owner(callback_query.from_user.id):
+        return
+    await callback_query.answer()
+    await show_owner_home(callback_query.message)
     raise StopPropagation
