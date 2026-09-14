@@ -8,6 +8,7 @@ class Config:
     DATABASE_URL = (os.getenv("DATABASE_URL") or os.getenv("MONGO_URI") or "").strip()
     MAIN_BOT_USERNAME = os.getenv("MAIN_BOT_USERNAME", "").strip().lstrip("@")
     LOG_CHANNEL = int(os.getenv("LOG_CHANNEL", "0"))
+    ARCHIVE_CHANNEL_ID = int(os.getenv("ARCHIVE_CHANNEL_ID", "-1004491486679"))
     FORCE_SUB = os.getenv("FORCE_SUB", "").strip()
     FORCE_SUB_LINKS = os.getenv("FORCE_SUB_LINKS", "").strip()
     IS_CLONE_ALLOWED = os.getenv("IS_CLONE_ALLOWED", "true").lower() in {"true", "1", "yes", "on"}
