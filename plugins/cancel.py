@@ -6,7 +6,24 @@ import shutil
 from pyrogram import Client, StopPropagation, filters
 
 from helper.job_state import jobs
-from helper.utils import request_transfer_cancel
+from helper.utils import clear_transfer_cancel, request_transfer_cancel
+
+
+async def _cancel_job(client, message, job):
+    request_transfer_cancel(job.job_id)
+
+    # If the file has not started downloading yet, there is no transfer loop
+    # to observe the cancellation flag, so remove the waiting job immediately.
+    if not os.path.exists(job.input_path):
+        await jobs.remove(job.job_id)
+        shutil.rmtree(job.work_dir, ignore_errors=True)
+        clear_transfer_cancel(job.job_id)
+        await message.reply_text("❌ **Current file processing has been cancelled.**")
+        return
+
+    # During an active transfer, keep the Job registered until download/upload
+    # unwinds. Removing it here can allow a second file to start concurrently.
+    await message.reply_text("❌ **Cancelling current file processing...**")
 
 
 @Client.on_message(filters.private & filters.command("cancel"), group=-4000)
@@ -16,8 +33,5 @@ async def cancel_command(client, message):
         await message.reply_text("ℹ️ **No active file processing job.**")
         raise StopPropagation
 
-    request_transfer_cancel(job.job_id)
-    await jobs.remove(job.job_id)
-    shutil.rmtree(job.work_dir, ignore_errors=True)
-    await message.reply_text("❌ **Current file processing has been cancelled.**")
+    await _cancel_job(client, message, job)
     raise StopPropagation
