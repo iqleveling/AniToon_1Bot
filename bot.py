@@ -16,11 +16,11 @@ logging.basicConfig(
 log = logging.getLogger("AniToon")
 
 
-# Only the public commands that are intended to be used directly.
-# All other functionality is available through the inline UI.
+# Public commands. File processing remains primarily inline through the UI.
 BOT_COMMANDS = [
     BotCommand("start", "Open AniToon"),
     BotCommand("help", "Show help"),
+    BotCommand("cancel", "Cancel current processing"),
 ]
 
 
@@ -46,10 +46,7 @@ class Bot(Client):
         try:
             await self.delete_bot_commands()
             await self.set_bot_commands(BOT_COMMANDS)
-            log.info(
-                "Telegram command menu reset: %s public commands",
-                len(BOT_COMMANDS),
-            )
+            log.info("Telegram command menu reset: %s public commands", len(BOT_COMMANDS))
         except Exception:
             log.exception("Could not update Telegram bot commands")
 
@@ -60,36 +57,20 @@ class Bot(Client):
                 me = await self.get_me()
                 self.bot_id = me.id
                 self.bot_username = me.username
-
-                log.info(
-                    "Main bot started: @%s (ID: %s)",
-                    me.username or "unknown",
-                    me.id,
-                )
-                log.info(
-                    "Telegram transfer concurrency: %s",
-                    Config.MAX_CONCURRENT_TRANSMISSIONS,
-                )
-
+                log.info("Main bot started: @%s (ID: %s)", me.username or "unknown", me.id)
+                log.info("Telegram transfer concurrency: %s", Config.MAX_CONCURRENT_TRANSMISSIONS)
                 await self._setup_commands()
-
                 if Config.IS_CLONE_ALLOWED:
                     self.clone_manager = CloneManager(self)
                     await self.clone_manager.start_all()
                     log.info("Clone Engine: enabled")
-
                 return
-
             except FloodWait as e:
                 wait_time = int(getattr(e, "value", 0) or 0)
-                log.error(
-                    "Telegram FloodWait during startup: %s seconds",
-                    wait_time,
-                )
+                log.error("Telegram FloodWait during startup: %s seconds", wait_time)
                 if wait_time <= 0:
                     raise
                 await asyncio.sleep(wait_time)
-
             except Exception:
                 log.exception("Main bot startup failed")
                 raise
