@@ -1,7 +1,7 @@
-import math
 import time
-import os
+
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
 from config import Config
 
 
@@ -35,7 +35,7 @@ def humanbytes(size):
     if not size:
         return "0 B"
     size = float(size)
-    for unit in ["B", "KB", "MB", "GB", "TB"]:
+    for unit in ("B", "KB", "MB", "GB", "TB"):
         if size < 1024.0:
             break
         size /= 1024.0
@@ -61,13 +61,6 @@ def time_formatter(milliseconds: int) -> str:
     return " ".join(parts) or "0s"
 
 
-def _progress_bar(percentage: float) -> str:
-    completed_str = getattr(Config, "COMPLETED_STR", "█") or "█"
-    remaining_str = getattr(Config, "REMAINING_STR", "░") or "░"
-    completed = max(0, min(20, int(percentage / 5)))
-    return completed_str * completed + remaining_str * (20 - completed)
-
-
 def _progress_text(current, total, ud_type, start):
     current = max(0, int(current or 0))
     total = max(0, int(total or 0))
@@ -91,6 +84,14 @@ def _progress_text(current, total, ud_type, start):
     )
 
 
+def _cancel_markup(job_id):
+    if not job_id:
+        return None
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("❌ Cancel", callback_data=f"transfer:cancel:{job_id}")]]
+    )
+
+
 async def progress_for_pyrogram(
     current,
     total,
@@ -99,7 +100,7 @@ async def progress_for_pyrogram(
     start,
     job_id=None,
 ):
-    """Update one transfer message at a low frequency and watch for cancellation."""
+    """Update a single status message without creating duplicate progress messages."""
     if job_id and is_transfer_cancelled(job_id):
         raise AniToonTransferCancelled("Transfer cancelled by user")
 
@@ -111,13 +112,16 @@ async def progress_for_pyrogram(
     interval = getattr(Config, "PROGRESS_UPDATE_INTERVAL", 1.5)
     last = _LAST_PROGRESS_UPDATE.get(key, 0.0)
 
-    # Keep Telegram edits low while still giving the user useful progress.
+    # Telegram receives only one edit per interval. The final callback is always shown.
     if current < total and now - last < interval:
         return
 
     try:
-        await message.edit_text(_progress_text(current, total, ud_type, start))
+        await message.edit_text(
+            _progress_text(current, total, ud_type, start),
+            reply_markup=_cancel_markup(job_id),
+        )
         _LAST_PROGRESS_UPDATE[key] = now
     except Exception:
-        # A progress update must never interrupt the transfer itself.
+        # Progress UI must never interrupt a real transfer.
         pass
