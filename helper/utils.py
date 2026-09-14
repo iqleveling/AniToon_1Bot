@@ -29,7 +29,6 @@ def is_transfer_cancelled(job_id: str) -> bool:
     return bool(job_id and str(job_id) in _CANCELLED_TRANSFERS)
 
 
-# --- HUMAN READABLE DATA ---
 def humanbytes(size):
     """Convert raw bytes to a compact human-readable value."""
     if not size:
@@ -61,6 +60,12 @@ def time_formatter(milliseconds: int) -> str:
     return " ".join(parts) or "0s"
 
 
+def _progress_bar(percentage: float) -> str:
+    """Render a readable 24-cell progress bar without the old zero-percent UI."""
+    completed = max(0, min(24, int((percentage / 100.0) * 24)))
+    return "█" * completed + "░" * (24 - completed)
+
+
 def _progress_text(current, total, ud_type, start):
     current = max(0, int(current or 0))
     total = max(0, int(total or 0))
@@ -74,13 +79,14 @@ def _progress_text(current, total, ud_type, start):
     else:
         eta_text = "calculating..."
 
-    title = "Uploading..." if "upload" in str(ud_type).lower() else "Downloading..."
+    title = "📥 Downloading..." if "upload" not in str(ud_type).lower() else "📤 Uploading..."
     return (
         f"{title}\n"
-        f"Size: {humanbytes(current)} | {humanbytes(total)}\n"
-        f"Done: {percentage:.2f}%\n"
-        f"Speed: {humanbytes(speed)}/s\n"
-        f"ETA: {eta_text}"
+        f"{_progress_bar(percentage)} {percentage:.2f}%\n\n"
+        f"📦 Size: {humanbytes(current)} / {humanbytes(total)}\n"
+        f"✅ Completed: {percentage:.2f}%\n"
+        f"🚀 Speed: {humanbytes(speed)}/s\n"
+        f"⏱ ETA: {eta_text}"
     )
 
 
@@ -100,7 +106,7 @@ async def progress_for_pyrogram(
     start,
     job_id=None,
 ):
-    """Update a single status message without creating duplicate progress messages."""
+    """Update one status message with full numeric transfer details."""
     if job_id and is_transfer_cancelled(job_id):
         raise AniToonTransferCancelled("Transfer cancelled by user")
 
@@ -112,7 +118,6 @@ async def progress_for_pyrogram(
     interval = getattr(Config, "PROGRESS_UPDATE_INTERVAL", 1.5)
     last = _LAST_PROGRESS_UPDATE.get(key, 0.0)
 
-    # Telegram receives only one edit per interval. The final callback is always shown.
     if current < total and now - last < interval:
         return
 
@@ -123,5 +128,4 @@ async def progress_for_pyrogram(
         )
         _LAST_PROGRESS_UPDATE[key] = now
     except Exception:
-        # Progress UI must never interrupt a real transfer.
         pass
