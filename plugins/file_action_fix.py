@@ -7,7 +7,7 @@ import time
 import uuid
 
 from pyrogram import Client, StopPropagation, filters
-from pyrogram.errors import FloodWait
+from pyrogram.errors import FloodWait, RPCError
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from helper.database import db
@@ -19,7 +19,6 @@ from helper.utils import AniToonTransferCancelled, clear_transfer_cancel, humanb
 from plugins.rename import (
     _ask_name,
     _base_without_extension,
-    _detect_name,
     _extension,
     _media_from_message,
     _safe_filename,
@@ -42,17 +41,26 @@ async def _send_plain_output(client: Client, job: Job, path: str, filename: str,
         f"📦 `{humanbytes(os.path.getsize(path))}`"
     )
     progress = progress_for_pyrogram if status else None
-    args = ("📤 Uploading", status, time.time(), job.job_id) if status else None
+    args = ("Uploading", status, time.time(), job.job_id) if status else None
+
     if mime.startswith("video/") or ext in {"mp4", "mkv", "webm", "mov", "avi", "flv", "ts", "m4v"}:
         try:
             return await client.send_video(job.user_id, path, caption=caption, progress=progress, progress_args=args) if progress else await client.send_video(job.user_id, path, caption=caption)
-        except Exception:
+        except RPCError as exc:
+            text = str(exc).lower()
+            if not any(word in text for word in ("video", "media", "document", "mime", "codec", "thumbnail")):
+                raise
             return await client.send_document(job.user_id, path, caption=caption, progress=progress, progress_args=args) if progress else await client.send_document(job.user_id, path, caption=caption)
+
     if mime.startswith("audio/") or ext in {"mp3", "m4a", "aac", "flac", "ogg", "wav", "opus"}:
         try:
             return await client.send_audio(job.user_id, path, caption=caption, progress=progress, progress_args=args) if progress else await client.send_audio(job.user_id, path, caption=caption)
-        except Exception:
+        except RPCError as exc:
+            text = str(exc).lower()
+            if not any(word in text for word in ("audio", "media", "document", "mime", "codec", "thumbnail")):
+                raise
             return await client.send_document(job.user_id, path, caption=caption, progress=progress, progress_args=args) if progress else await client.send_document(job.user_id, path, caption=caption)
+
     return await client.send_document(job.user_id, path, caption=caption, progress=progress, progress_args=args) if progress else await client.send_document(job.user_id, path, caption=caption)
 
 
@@ -97,7 +105,6 @@ async def repaired_file_download(client: Client, message: Message):
         await message.reply_text("⏳ **You already have an active file job.**\n\nPlease finish or cancel it first.")
         raise StopPropagation
 
-    detected = [f"{k}: {v}" for k, v in []]
     text = (
         "📂 **File Detected**\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
@@ -207,7 +214,6 @@ async def rename_reply_fix(client, message: Message):
     status = await message.reply_text("Downloading...", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data=f"transfer:cancel:{job.job_id}")]]))
     try:
         await download_job(client, await client.get_messages(message.chat.id, job.source_message_id), job, status)
-        await _send_plain_output(client, job, output_path, name, status) if False else None
         os.replace(job.input_path, output_path)
         await _send_plain_output(client, job, output_path, name, status)
         await db.update_usage(job.user_id, job.bot_id, os.path.getsize(output_path))
