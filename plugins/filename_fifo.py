@@ -17,11 +17,18 @@ async def _next_waiting(user_id: int):
 
 @Client.on_message(filters.private & filters.text, group=-1600)
 async def fifo_filename_input(client, message):
+    # Commands must always remain commands. Previously this handler saw /start
+    # while a queued rename was waiting and incorrectly treated it as the
+    # requested filename, which made /start appear to do nothing.
+    text_value = (message.text or "").strip()
+    if text_value.startswith("/"):
+        return
+
     job = await _next_waiting(message.from_user.id)
     if not job:
         return
 
-    text = _safe_filename(message.text or "")
+    text = _safe_filename(text_value)
     if not text:
         await message.reply_text("❌ Please send a valid filename.")
         raise StopPropagation
