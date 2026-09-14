@@ -1,4 +1,4 @@
-"""Deferred action workflow: download only after the user chooses an operation/name."""
+"""Deferred action workflow: choose operation and output type before downloading."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import time
 
 from pyrogram import Client, StopPropagation, filters
 from pyrogram.errors import FloodWait, RPCError
+from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from helper.database import db
 from helper.ffmpeg import convert_media
@@ -16,7 +17,7 @@ from helper.job_state import jobs
 from helper.job_transfer import cancel_markup, download_job
 from helper.utils import AniToonTransferCancelled, clear_transfer_cancel, humanbytes, progress_for_pyrogram
 from plugins.rename import _base_without_extension, _extension, _safe_filename
-from plugins.ui import advanced_menu, convert_menu
+from plugins.ui import advanced_menu, convert_menu, rename_format_menu
 
 
 async def _source(client, message, job):
@@ -24,7 +25,6 @@ async def _source(client, message, job):
 
 
 async def _upload_with_retry(send_func, *, path, caption, status, job_id, **kwargs):
-    """Retry only transient Telegram/network failures without hiding upload errors."""
     last_error = None
     for attempt in range(1, 4):
         try:
@@ -46,8 +46,6 @@ async def _upload_with_retry(send_func, *, path, caption, status, job_id, **kwar
             if attempt < 3:
                 await asyncio.sleep(1.5 * attempt)
         except RPCError as exc:
-            # Bad media/container errors are not useful to retry. Other RPC
-            # errors can be transient, so give them a short retry window.
             last_error = exc
             text = str(exc).lower()
             retryable = any(word in text for word in ("timeout", "connection", "tempor", "network", "server"))
@@ -66,33 +64,17 @@ async def _send_file(client, job, path, filename, status):
 
     if is_video:
         try:
-            return await _upload_with_retry(
-                client.send_video,
-                path=path,
-                caption=caption,
-                status=status,
-                job_id=job.job_id,
-                chat_id=job.user_id,
-            )
+            return await _upload_with_retry(client.send_video, path=path, caption=caption, status=status, job_id=job.job_id, chat_id=job.user_id)
         except AniToonTransferCancelled:
             raise
         except RPCError as exc:
-            # Only a Telegram media-validation RPC error should trigger a
-            # document fallback. Network failures must not restart from zero.
             text = str(exc).lower()
             if not any(word in text for word in ("video", "media", "document", "mime", "codec", "thumbnail")):
                 raise
 
     if is_audio:
         try:
-            return await _upload_with_retry(
-                client.send_audio,
-                path=path,
-                caption=caption,
-                status=status,
-                job_id=job.job_id,
-                chat_id=job.user_id,
-            )
+            return await _upload_with_retry(client.send_audio, path=path, caption=caption, status=status, job_id=job.job_id, chat_id=job.user_id)
         except AniToonTransferCancelled:
             raise
         except RPCError as exc:
@@ -100,14 +82,7 @@ async def _send_file(client, job, path, filename, status):
             if not any(word in text for word in ("audio", "media", "document", "mime", "codec", "thumbnail")):
                 raise
 
-    return await _upload_with_retry(
-        client.send_document,
-        path=path,
-        caption=caption,
-        status=status,
-        job_id=job.job_id,
-        chat_id=job.user_id,
-    )
+    return await _upload_with_retry(client.send_document, path=path, caption=caption, status=status, job_id=job.job_id, chat_id=job.user_id)
 
 
 @Client.on_callback_query(filters.regex(r"^job:rename:([0-9a-f]+)$"), group=-5000)
@@ -117,8 +92,31 @@ async def deferred_rename(client, cb):
         await cb.answer("Job expired. Send the file again.", show_alert=True)
         raise StopPropagation
     await cb.answer()
-    await jobs.update(job.job_id, selected_action="custom_name", extra={**job.extra, "rename_output_mode": "file"})
-    await cb.message.edit_text("Enter new filename:", reply_markup=cancel_markup(job.job_id))
+    await jobs.update(job.job_id, selected_action="rename_format")
+    await cb.message.edit_text(
+        "✏️ **Rename**\n\nChoose the output type:",
+        reply_markup=rename_format_menu(job.job_id),
+    )
+    raise StopPropagation
+
+
+@Client.on_callback_query(filters.regex(r"^job:renameformat:([0-9a-f]+):(document|video)$"), group=-5000)
+async def deferred_rename_format(client, cb):
+    job = await jobs.get(cb.matches[0].group(1))
+    if not job:
+        await cb.answer("Job expired. Send the file again.", show_alert=True)
+        raise StopPropagation
+    mode = cb.matches[0].group(2)
+    await cb.answer()
+    await jobs.update(
+        job.job_id,
+        selected_action="custom_name",
+        extra={**job.extra, "rename_output_mode": mode},
+    )
+    await cb.message.edit_text(
+        f"✏️ **Rename → {mode.title()}**\n\nEnter the new filename:",
+        reply_markup=cancel_markup(job.job_id),
+    )
     raise StopPropagation
 
 
@@ -127,10 +125,10 @@ async def deferred_convert(client, cb):
     job = await jobs.get(cb.matches[0].group(1))
     if not job:
         await cb.answer("Job expired. Send the file again.", show_alert=True)
-    else:
-        await cb.answer()
-        await jobs.update(job.job_id, selected_action="convert_menu")
-        await cb.message.edit_text("🔄 **Convert File**\n\nChoose the output format:", reply_markup=convert_menu(job.job_id))
+        raise StopPropagation
+    await cb.answer()
+    await jobs.update(job.job_id, selected_action="convert_menu")
+    await cb.message.edit_text("🔄 **Convert File**\n\nChoose the output format:", reply_markup=convert_menu(job.job_id))
     raise StopPropagation
 
 
@@ -163,6 +161,7 @@ async def deferred_name(client, message):
     job = await jobs.get_user_job(message.from_user.id)
     if not job or job.selected_action not in {"custom_name", "convert_name"}:
         return
+
     text = _safe_filename(message.text or "")
     if not text:
         await message.reply_text("❌ **Please send a valid filename.**")
@@ -186,12 +185,15 @@ async def deferred_name(client, message):
             output_path = os.path.join(job.work_dir, name)
             await _send_file(client, job, output_path, name, status)
         else:
+            mode = str(job.extra.get("rename_output_mode", "file"))
             ext = _extension(job.original_name)
             name = text
             if _extension(name) != ext:
                 name = f"{_base_without_extension(name)}.{ext}" if ext else name
             output_path = os.path.join(job.work_dir, name)
             os.replace(job.input_path, output_path)
+            if mode == "video":
+                job.mime_type = "video/mp4"
             await _send_file(client, job, output_path, name, status)
 
         input_size = int(job.extra.get("downloaded_size", 0) or 0)
@@ -226,20 +228,9 @@ async def deferred_cancel(client, cb):
     from helper.utils import request_transfer_cancel
     request_transfer_cancel(job.job_id)
 
-    # A waiting job has no transfer callback running, so remove it immediately.
-    if not os.path.exists(job.input_path):
-        await jobs.remove(job.job_id)
-        shutil.rmtree(job.work_dir, ignore_errors=True)
-        clear_transfer_cancel(job.job_id)
-        try:
-            await cb.message.edit_text("❌ **Processing cancelled.**")
-        except Exception:
-            pass
-    else:
-        try:
-            await cb.message.edit_text("❌ **Cancelling processing...**")
-        except Exception:
-            pass
-
-    await cb.answer("Cancelled" if not os.path.exists(job.input_path) else "Cancelling...")
+    try:
+        await cb.message.edit_text("❌ **Cancelling processing...**")
+    except Exception:
+        pass
+    await cb.answer("Cancelling...")
     raise StopPropagation
