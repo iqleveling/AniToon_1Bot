@@ -52,11 +52,12 @@ def _chat_id_from_send(args: tuple[Any, ...], kwargs: dict[str, Any]) -> int | N
     if chat_id is None:
         return None
     try:
-        # The bot only auto-cleans direct private chats. Numeric IDs for users
-        # are sufficient; usernames are deliberately left untouched.
-        return int(chat_id)
+        chat_id = int(chat_id)
     except (TypeError, ValueError):
         return None
+    # Only positive numeric IDs are direct private user chats. Channels and
+    # groups use negative IDs and must never be included in auto-cleanup.
+    return chat_id if chat_id > 0 else None
 
 
 async def _cleanup_before_new_bot_message(client, chat_id: int):
@@ -94,26 +95,11 @@ async def _remember_bot_result(chat_id: int, result: Any):
         _last_bot_messages[int(chat_id)] = message_ids
 
 
-# Pyrogram creates outgoing messages through these Client methods, including
-# Message.reply_* helpers. Wrapping the instance keeps the feature working for
-# the main bot and every clone without changing individual plugin handlers.
 _AUTOCLEAN_METHODS = (
-    "send_message",
-    "send_document",
-    "send_video",
-    "send_audio",
-    "send_photo",
-    "send_animation",
-    "send_voice",
-    "send_video_note",
-    "send_sticker",
-    "send_contact",
-    "send_location",
-    "send_poll",
-    "send_dice",
-    "send_media_group",
-    "copy_message",
-    "copy_media_group",
+    "send_message", "send_document", "send_video", "send_audio", "send_photo",
+    "send_animation", "send_voice", "send_video_note", "send_sticker",
+    "send_contact", "send_location", "send_poll", "send_dice", "send_media_group",
+    "copy_message", "copy_media_group",
 )
 
 
@@ -126,7 +112,7 @@ def install_auto_cleanup(client):
         if original is None:
             continue
 
-        async def wrapped(self, *args, __original=original, __method_name=method_name, **kwargs):
+        async def wrapped(self, *args, __original=original, **kwargs):
             chat_id = _chat_id_from_send(args, kwargs)
             if chat_id:
                 lock = _locks[chat_id]
