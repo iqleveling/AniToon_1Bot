@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import shutil
 import time
 
 from pyrogram import Client, StopPropagation, filters
-from pyrogram.types import ForceReply
+from pyrogram.errors import RPCError
 
 from helper.database import db
 from helper.ffmpeg import convert_media
@@ -22,21 +23,81 @@ async def _source(client, message, job):
     return await client.get_messages(message.chat.id, job.source_message_id)
 
 
+async def _upload_with_retry(send_func, *, path, caption, status, job_id, **kwargs):
+    """Upload with retries for transient Telegram/network failures.
+
+    A failure near 100% can otherwise leave the bot looking stuck even though the
+    local file is complete. Retrying the same file is preferable to immediately
+    switching media types, which can restart the upload unnecessarily.
+    """
+    last_error = None
+    for attempt in range(1, 4):
+        try:
+            clear_transfer_cancel(job_id)
+            return await send_func(
+                path,
+                caption=caption,
+                progress=progress_for_pyrogram,
+                progress_args=("📤 Uploading", status, time.time(), job_id),
+                **kwargs,
+            )
+        except AniToonTransferCancelled:
+            raise
+        except RPCError as exc:
+            last_error = exc
+        except (OSError, TimeoutError, asyncio.TimeoutError, ConnectionError) as exc:
+            last_error = exc
+        if attempt < 3:
+            await asyncio.sleep(1.5 * attempt)
+    raise last_error or RuntimeError("Telegram upload failed")
+
+
 async def _send_file(client, job, path, filename, status):
     caption = f"✅ **AniToon Processed**\n\n📂 `{filename}`\n📦 `{humanbytes(os.path.getsize(path))}`"
     ext = _extension(filename)
-    args = ("📤 Uploading", status, time.time(), job.job_id)
-    if (job.mime_type or "").startswith("video/") or ext in {"mp4", "mkv", "webm", "mov", "avi", "flv", "ts", "m4v"}:
+    is_video = (job.mime_type or "").startswith("video/") or ext in {"mp4", "mkv", "webm", "mov", "avi", "flv", "ts", "m4v"}
+    is_audio = (job.mime_type or "").startswith("audio/") or ext in {"mp3", "m4a", "aac", "flac", "ogg", "wav", "opus"}
+
+    if is_video:
         try:
-            return await client.send_video(job.user_id, path, caption=caption, progress=progress_for_pyrogram, progress_args=args)
+            return await _upload_with_retry(
+                client.send_video,
+                path=path,
+                caption=caption,
+                status=status,
+                job_id=job.job_id,
+                chat_id=job.user_id,
+            )
+        except AniToonTransferCancelled:
+            raise
+        except Exception:
+            # Some containers/codecs are rejected by sendVideo. Retry as a
+            # document instead of losing the completed output.
+            pass
+
+    if is_audio:
+        try:
+            return await _upload_with_retry(
+                client.send_audio,
+                path=path,
+                caption=caption,
+                status=status,
+                job_id=job.job_id,
+                chat_id=job.user_id,
+            )
+        except AniToonTransferCancelled:
+            raise
         except Exception:
             pass
-    if (job.mime_type or "").startswith("audio/") or ext in {"mp3", "m4a", "aac", "flac", "ogg", "wav", "opus"}:
-        try:
-            return await client.send_audio(job.user_id, path, caption=caption, progress=progress_for_pyrogram, progress_args=args)
-        except Exception:
-            pass
-    return await client.send_document(job.user_id, path, caption=caption, progress=progress_for_pyrogram, progress_args=args)
+
+    return await _upload_with_retry(
+        client.send_document,
+        path=path,
+        caption=caption,
+        status=status,
+        job_id=job.job_id,
+        chat_id=job.user_id,
+    )
 
 
 @Client.on_callback_query(filters.regex(r"^job:rename:([0-9a-f]+)$"), group=-5000)
