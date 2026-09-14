@@ -26,17 +26,10 @@ def get_bot_id(client):
 async def send_plan_menu(client, chat_id, target_bot_id):
     buttons = []
     for plan in all_paid_plans():
-        buttons.append([
-            InlineKeyboardButton(
-                f"{plan.name} • {plan.stars} ⭐",
-                callback_data=f"buy:{plan.key}:{int(target_bot_id)}",
-            )
-        ])
+        buttons.append([InlineKeyboardButton(f"{plan.name} • {plan.stars} ⭐", callback_data=f"buy:{plan.key}:{int(target_bot_id)}")])
     buttons.append([InlineKeyboardButton("⬅️ Back", callback_data="start")])
-
     text = (
-        "💎 **AniToon Premium Plans**\n\n"
-        "Choose your plan for 30 days:\n\n"
+        "💎 **AniToon Premium Plans**\n\nChoose your plan for 30 days:\n\n"
         "🆓 **Free**\n⭐ 0 Stars\n📊 10 GB/day\n\n"
         "⚡ **Pro**\n⭐ 10 Stars / 30 days\n📊 20 GB/day\n\n"
         "💎 **Premium**\n⭐ 20 Stars / 30 days\n📊 40 GB/day\n\n"
@@ -52,14 +45,12 @@ async def user_plan_status(client, message):
     bot_id = get_bot_id(client)
     if not await db.is_user_exist(user_id):
         await db.add_user(user_id)
-
     subscription = await db.get_subscription(user_id, bot_id)
     plan = get_plan(subscription.get("plan", "free"))
     used = await db.get_usage(user_id, bot_id)
     remaining = max(plan.daily_limit - used, 0)
     expires_at = subscription.get("expires_at")
     expiry_text = expires_at.strftime("%d %b %Y, %H:%M") if expires_at else "No expiry"
-
     text = (
         "📊 **AniToon Plan Status**\n\n"
         f"👤 **User:** `{message.from_user.first_name}`\n"
@@ -70,15 +61,11 @@ async def user_plan_status(client, message):
         f"⏳ **Remaining:** `{humanbytes(remaining)}`\n"
         f"📅 **Expires:** `{expiry_text}`"
     )
-
     if is_main_bot(client):
         keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("💎 View Plans", callback_data="upgrade")]])
     elif Config.MAIN_BOT_USERNAME:
         keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton(
-                "💎 Buy / Upgrade",
-                url=f"https://t.me/{Config.MAIN_BOT_USERNAME}?start=plans_{bot_id}",
-            )
+            InlineKeyboardButton("💎 Buy / Upgrade", url=f"https://t.me/{Config.MAIN_BOT_USERNAME}?start=plans_{bot_id}")
         ]])
     else:
         keyboard = None
@@ -89,7 +76,6 @@ async def user_plan_status(client, message):
 async def upgrade_button(client, callback_query):
     await callback_query.answer()
     bot_id = get_bot_id(client)
-
     if not is_main_bot(client):
         if not Config.MAIN_BOT_USERNAME:
             return await edit_callback_message(callback_query, "❌ **Main payment bot is not configured.**")
@@ -97,121 +83,77 @@ async def upgrade_button(client, callback_query):
             callback_query,
             "💎 **AniToon Premium**\n\nPremium purchases are handled by **AniToon_1Bot**.",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton(
-                    "⭐ Open Main Payment Bot",
-                    url=f"https://t.me/{Config.MAIN_BOT_USERNAME}?start=plans_{bot_id}",
-                )],
+                [InlineKeyboardButton("⭐ Open Main Payment Bot", url=f"https://t.me/{Config.MAIN_BOT_USERNAME}?start=plans_{bot_id}")],
                 [InlineKeyboardButton("⬅️ Back", callback_data="start")],
             ]),
         )
-
     await send_plan_menu(client, callback_query.from_user.id, bot_id)
 
 
 async def _send_stars_invoice(client, user_id: int, plan, payload: str):
-    """Call the current Telegram Bot API sendInvoice through Pyrogram raw API.
-
-    Pyrogram 2.0.106 does not expose send_invoice as a Client method. Telegram's
-    Bot API still supports sendInvoice for Stars, so use bots.sendCustomRequest
-    with the exact Bot API JSON payload instead of calling a missing method.
-    """
     invoice = {
         "chat_id": int(user_id),
         "title": f"AniToon {plan.name}"[:32],
-        "description": (
-            f"{plan.name} plan for 30 days. "
-            f"Daily limit: {humanbytes(plan.daily_limit)}."
-        )[:255],
+        "description": f"{plan.name} plan for 30 days. Daily limit: {humanbytes(plan.daily_limit)}."[:255],
         "payload": payload,
         "currency": "XTR",
         "prices": [{"label": plan.name[:32], "amount": int(plan.stars)}],
     }
-    # provider_token is intentionally omitted for digital goods paid in Stars.
-    result = await client.invoke(
-        SendCustomRequest(
-            custom_method="sendInvoice",
-            params=DataJSON(data=json.dumps(invoice, separators=(",", ":"))),
-        )
-    )
-    return result
+    return await client.invoke(SendCustomRequest(
+        custom_method="sendInvoice",
+        params=DataJSON(data=json.dumps(invoice, separators=(",", ":"))),
+    ))
 
 
 @Client.on_callback_query(filters.regex(r"^buy:(pro|premium|ultra):(\d+)$"))
 async def buy_plan(client, callback_query):
     if not is_main_bot(client):
-        return await callback_query.answer(
-            "Payment must be completed through AniToon_1Bot.",
-            show_alert=True,
-        )
-
+        return await callback_query.answer("Payment must be completed through AniToon_1Bot.", show_alert=True)
     await callback_query.answer()
     match = callback_query.matches[0]
     plan_key = match.group(1)
     target_bot_id = int(match.group(2))
     plan = get_plan(plan_key)
-    payload = f"anitoon|{plan_key}|{target_bot_id}"
-
+    payload = f"anitoon|{plan_key}|{target_bot_id}|{callback_query.from_user.id}"
     try:
-        await _send_stars_invoice(
-            client,
-            callback_query.from_user.id,
-            plan,
-            payload,
-        )
+        await _send_stars_invoice(client, callback_query.from_user.id, plan, payload)
     except Exception as exc:
         await client.send_message(
             callback_query.from_user.id,
-            "❌ **Payment Error**\n\n"
-            "The Stars invoice could not be created.\n\n"
+            "❌ **Payment Error**\n\nThe Stars invoice could not be created.\n\n"
             f"`{str(exc)[:1000]}`",
         )
+
+
+async def _answer_precheckout(client, update, success: bool, error: str | None = None):
+    await client.invoke(SetBotPrecheckoutResults(
+        query_id=update.query_id,
+        success=success,
+        error=error,
+    ))
 
 
 @Client.on_raw_update()
 async def pre_checkout_handler(client, update, users, chats):
     if not is_main_bot(client) or not isinstance(update, UpdateBotPrecheckoutQuery):
         return
-
     try:
         payload = update.payload.decode("utf-8") if isinstance(update.payload, (bytes, bytearray)) else str(update.payload)
         parts = payload.split("|")
-
-        if len(parts) != 3 or parts[0] != "anitoon" or parts[1] not in PLANS:
-            await client.invoke(SetBotPrecheckoutResults(
-                query_id=update.query_id,
-                success=False,
-                error="Invalid payment information.",
-            ))
-            return
-
+        if len(parts) != 4 or parts[0] != "anitoon" or parts[1] not in PLANS:
+            return await _answer_precheckout(client, update, False, "Invalid payment information.")
         plan = get_plan(parts[1])
+        buyer_id = int(parts[3])
+        if int(update.user_id) != buyer_id:
+            return await _answer_precheckout(client, update, False, "This invoice belongs to another user.")
         if update.currency != "XTR":
-            await client.invoke(SetBotPrecheckoutResults(
-                query_id=update.query_id,
-                success=False,
-                error="Telegram Stars payments only.",
-            ))
-            return
-
+            return await _answer_precheckout(client, update, False, "Telegram Stars payments only.")
         if int(update.total_amount) != int(plan.stars):
-            await client.invoke(SetBotPrecheckoutResults(
-                query_id=update.query_id,
-                success=False,
-                error="Invalid payment amount.",
-            ))
-            return
-
-        await client.invoke(SetBotPrecheckoutResults(
-            query_id=update.query_id,
-            success=True,
-        ))
+            return await _answer_precheckout(client, update, False, "Invalid payment amount.")
+        await _answer_precheckout(client, update, True)
     except Exception:
         try:
-            await client.invoke(SetBotPrecheckoutResults(
-                query_id=update.query_id,
-                success=False,
-                error="Payment validation failed.",
-            ))
+            await _answer_precheckout(client, update, False, "Payment validation failed.")
         except Exception:
             pass
 
@@ -227,25 +169,21 @@ SUCCESSFUL_PAYMENT_FILTER = filters.create(_successful_payment_filter)
 async def payment_message_handler(client, message):
     if not is_main_bot(client):
         return
-
     payment = getattr(message, "successful_payment", None)
     if not payment:
         return
-
     try:
         parts = str(payment.invoice_payload).split("|")
-        if len(parts) != 3 or parts[0] != "anitoon":
+        if len(parts) != 4 or parts[0] != "anitoon":
             return await message.reply_text("❌ Invalid payment information.")
-
         plan_key = parts[1]
         target_bot_id = int(parts[2])
-        if plan_key not in PLANS:
-            return await message.reply_text("❌ Invalid plan.")
-
+        buyer_id = int(parts[3])
+        if buyer_id != message.from_user.id or plan_key not in PLANS:
+            return await message.reply_text("❌ Invalid payment information.")
         plan = get_plan(plan_key)
         if payment.currency != "XTR" or int(payment.total_amount) != int(plan.stars):
             return await message.reply_text("❌ Invalid Stars payment.")
-
         charge_id = str(payment.telegram_payment_charge_id)
         recorded = await db.record_payment(
             user_id=message.from_user.id,
@@ -256,7 +194,6 @@ async def payment_message_handler(client, message):
         )
         if not recorded:
             return await message.reply_text("ℹ️ This payment was already processed.")
-
         await db.set_plan(
             user_id=message.from_user.id,
             bot_id=target_bot_id,
@@ -264,7 +201,6 @@ async def payment_message_handler(client, message):
             stars_paid=int(payment.total_amount),
             payment_id=charge_id,
         )
-
         subscription = await db.get_subscription(message.from_user.id, target_bot_id)
         expires_at = subscription.get("expires_at")
         expiry_text = expires_at.strftime("%d %b %Y, %H:%M") if expires_at else "No expiry"
@@ -277,22 +213,11 @@ async def payment_message_handler(client, message):
             "🎉 Your plan is now active."
         )
     except Exception:
-        await message.reply_text(
-            "⚠️ **Payment received, but activation failed.**\n\n"
-            "Please use `/paysupport`."
-        )
+        await message.reply_text("⚠️ **Payment received, but activation failed.**\n\nPlease use `/paysupport`.")
 
 
 @Client.on_message(filters.private & filters.command("paysupport"))
 async def payment_support(client, message):
     await message.reply_text(
-        "💳 **Payment Support**\n\n"
-        "For Stars payment or Premium activation problems, contact @AniToon_Official."
+        "💳 **Payment Support**\n\nFor Stars payment or Premium activation problems, contact @AniToon_Official."
     )
-
-
-@Client.on_message(filters.private & filters.command("clone"))
-async def initiate_clone(client, message):
-    # Keep the existing clone implementation from the original plugin below.
-    from plugins.clone_runtime import initiate_clone as _clone
-    return await _clone(client, message)
