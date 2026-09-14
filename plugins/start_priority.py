@@ -3,6 +3,7 @@
 from pyrogram import Client, StopPropagation, filters
 
 from config import Config
+from helper.message_cleanup import install_auto_cleanup, remember_user_message
 from plugins.ui import main_menu
 
 
@@ -30,6 +31,13 @@ def _apply_force_sub_links():
     group=-100,
 )
 async def priority_start(client, message):
+    install_auto_cleanup(client)
+    try:
+        if message.from_user and not message.from_user.is_bot:
+            await remember_user_message(message.chat.id, message.id)
+    except Exception:
+        pass
+
     # Clones are already created by an owner who has passed the main-bot
     # ForceSub gate. Requiring every clone to be an administrator in the
     # same four channels would make newly created clones appear dead.
