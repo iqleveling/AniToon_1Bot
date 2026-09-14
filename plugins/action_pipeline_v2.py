@@ -11,7 +11,7 @@ from helper.database import db
 from helper.ffmpeg import convert_media, get_video_info, make_streamable
 from helper.job_state import jobs
 from helper.job_transfer import download_job
-from helper.utils import AniToonTransferCancelled, clear_transfer_cancel, progress_for_pyrogram
+from helper.utils import AniToonTransferCancelled, clear_transfer_cancel, progress_for_pyrogram, reset_progress
 from plugins.rename import _base_without_extension, _extension, _safe_filename
 from plugins.ui import rename_format_menu
 
@@ -23,7 +23,7 @@ def cancel(job_id: str):
     return InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data=f"transfer:cancel:{job_id}")]])
 
 
-async def _delete(client, chat_id: int, *ids: int | None):
+async def _delete(client, chat_id, *ids):
     values = [int(x) for x in ids if x]
     if not values:
         return
@@ -38,11 +38,12 @@ async def _delete(client, chat_id: int, *ids: int | None):
 
 
 async def _safe_edit(message, text: str, reply_markup=None):
-    """Ignore harmless Telegram MESSAGE_NOT_MODIFIED edits."""
+    """Edit status without turning an already-current message into a job failure."""
     try:
         current = getattr(message, "text", None) or getattr(message, "caption", None)
         if current == text:
-            return
+            if reply_markup is None:
+                return
         await message.edit_text(text, reply_markup=reply_markup)
     except Exception as exc:
         if "MESSAGE_NOT_MODIFIED" not in str(exc).upper():
@@ -64,7 +65,12 @@ async def _finish_cleanup(client, job):
 
 
 async def _send_result(client, job, path: str, name: str, status, kind: str):
-    args = ("📤 Uploading", status, time.time(), job.job_id)
+    """Upload the completed file and keep Telegram video metadata intact."""
+    reset_progress(job.job_id)
+    args = ("Uploading", status, time.time(), job.job_id)
+
+    if not os.path.isfile(path) or os.path.getsize(path) <= 0:
+        raise RuntimeError("Output file is missing or empty")
 
     if kind == "video":
         duration, width, height = await get_video_info(path)
@@ -72,6 +78,9 @@ async def _send_result(client, job, path: str, name: str, status, kind: str):
             raise RuntimeError("Output is not a valid video with duration and dimensions")
 
         upload_path = path
+        # Telegram's streaming player works best with MP4 + faststart. Do not
+        # remux an existing MP4 because the converter already created a valid
+        # streamable file and doing it twice can introduce unnecessary failures.
         if not path.lower().endswith(".mp4"):
             stream_path = os.path.join(job.work_dir, "streamable.mp4")
             ready = await make_streamable(path, stream_path)
@@ -79,6 +88,8 @@ async def _send_result(client, job, path: str, name: str, status, kind: str):
                 upload_path = ready
                 duration, width, height = await get_video_info(upload_path)
 
+        if not os.path.isfile(upload_path) or os.path.getsize(upload_path) <= 0:
+            raise RuntimeError("Video preparation completed without a usable output file")
         if not duration or not width or not height:
             raise RuntimeError("Could not prepare a valid Telegram video")
 
@@ -87,17 +98,29 @@ async def _send_result(client, job, path: str, name: str, status, kind: str):
             upload_path,
             caption=None,
             duration=max(1, int(round(duration))),
-            width=width,
-            height=height,
+            width=int(width),
+            height=int(height),
             supports_streaming=True,
             progress=progress_for_pyrogram,
             progress_args=args,
         )
 
     if kind == "audio":
-        return await client.send_audio(job.user_id, path, caption=None, progress=progress_for_pyrogram, progress_args=args)
+        return await client.send_audio(
+            job.user_id,
+            path,
+            caption=None,
+            progress=progress_for_pyrogram,
+            progress_args=args,
+        )
 
-    return await client.send_document(job.user_id, path, caption=None, progress=progress_for_pyrogram, progress_args=args)
+    return await client.send_document(
+        job.user_id,
+        path,
+        caption=None,
+        progress=progress_for_pyrogram,
+        progress_args=args,
+    )
 
 
 async def _run(client, job, status, name: str, kind: str, convert: bool):
@@ -108,6 +131,10 @@ async def _run(client, job, status, name: str, kind: str, convert: bool):
     await _safe_edit(status, "📥 **Downloading...**", reply_markup=cancel(job.job_id))
     await download_job(client, source, job, status)
 
+    # The download progress callback ended at 100%. Reset its throttle state
+    # before the upload stage so the first upload update is never suppressed.
+    reset_progress(job.job_id)
+
     output = os.path.join(job.work_dir, name)
     if convert:
         ext = os.path.splitext(name)[1].lstrip(".").lower()
@@ -116,7 +143,11 @@ async def _run(client, job, status, name: str, kind: str, convert: bool):
     else:
         os.replace(job.input_path, output)
 
-    await _safe_edit(status, "📤 **Uploading... 0%**", reply_markup=cancel(job.job_id))
+    if not os.path.isfile(output) or os.path.getsize(output) <= 0:
+        raise RuntimeError("Processing completed but no output file was created")
+
+    reset_progress(job.job_id)
+    await _safe_edit(status, "📤 **Uploading...**", reply_markup=cancel(job.job_id))
     await _send_result(client, job, output, name, status, kind)
     await db.update_usage(job.user_id, job.bot_id, os.path.getsize(output))
 
@@ -202,7 +233,7 @@ async def filename_v2(client, message):
             if not ext:
                 raise RuntimeError("Conversion format expired")
             name = f"{_base_without_extension(text)}.{ext}"
-            kind = "video" if ext == "mp4" else "audio" if ext in AUDIO else "document"
+            kind = "video" if ext in VIDEO else "audio" if ext in AUDIO else "document"
             await _run(client, job, status, name, kind, True)
         elif job.extra.get("rename_output_mode") == "video":
             name = f"{_base_without_extension(text)}.mp4"
