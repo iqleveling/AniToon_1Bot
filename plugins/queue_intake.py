@@ -7,13 +7,15 @@ from pyrogram import Client, StopPropagation, filters
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from helper.job_state import Job, jobs
-from helper.plans import get_plan
 from helper.utils import humanbytes
 from plugins.rename import _media_from_message, _safe_filename, _user_context
 from plugins.ui import file_action_menu
 
 
-@Client.on_message(filters.private & (filters.document | filters.video | filters.audio), group=-2000)
+@Client.on_message(
+    filters.private & (filters.document | filters.video | filters.audio),
+    group=-2000,
+)
 async def fifo_file_intake(client: Client, message: Message):
     """Create every incoming file as a FIFO job; never discard an older job."""
     user_id = message.from_user.id
@@ -23,6 +25,7 @@ async def fifo_file_intake(client: Client, message: Message):
     if error:
         await message.reply_text(error)
         raise StopPropagation
+
     user_data, plan, used = context
     media = _media_from_message(message)
     if not media:
@@ -67,21 +70,27 @@ async def fifo_file_intake(client: Client, message: Message):
     )
 
     if not await jobs.register(job):
-        await message.reply_text("❌ Could not add this file to the queue. Please send it again.")
+        await message.reply_text(
+            "❌ Could not add this file to the queue. Please send it again."
+        )
         raise StopPropagation
 
     position = await jobs.user_position(job_id) if hasattr(jobs, "user_position") else 1
     if position > 1:
-        header = f"⏳ **Queued — position {position}**\n\n"
+        text = (
+            f"⏳ **Queued — position {position}**\n\n"
+            f"📄 `{original_name}`\n"
+            f"📦 `{humanbytes(expected_size)}`\n\n"
+            "Choose an operation. Your files are processed in the order received."
+        )
     else:
-        header = "📂 **File Detected**\n\n"
+        text = (
+            "📂 **File Detected**\n\n"
+            f"📄 `{original_name}`\n"
+            f"📦 `{humanbytes(expected_size)}`\n\n"
+            "Choose an operation. Your files are processed in the order received."
+        )
 
-    text = (
-        header
-        f"📄 `{original_name}`\n"
-        f"📦 `{humanbytes(expected_size)}`\n\n"
-        "Choose an operation. Your files are processed in the order received."
-    )
     prompt = await message.reply_text(text, reply_markup=file_action_menu(job_id))
     await jobs.update(job_id, extra={**job.extra, "prompt_message_id": prompt.id})
     raise StopPropagation
