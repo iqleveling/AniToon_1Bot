@@ -6,6 +6,7 @@ from pyrogram import Client, StopPropagation, filters
 
 from helper.database import db
 from helper.job_state import jobs
+from helper.message_cleanup import protect_start_page
 from helper.plans import get_plan
 from helper.utils import humanbytes
 from plugins.rename import _download_job
@@ -26,8 +27,6 @@ async def replace_waiting_file_job(client, message):
     shutil.rmtree(job.work_dir, ignore_errors=True)
     await jobs.remove(job.job_id)
     await message.reply_text("🔄 **Previous rename request cleared. Starting the new file...**")
-    # Do NOT call _download_job here. Allow the high-priority verified intake
-    # handler in file_action_fix.py to process this same message exactly once.
     return
 
 
@@ -49,10 +48,11 @@ async def clean_start(client, message):
         joined, missing, failed = await get_force_sub_status(client, user_id)
         total = len(missing) + joined + len(failed)
         if joined != total or missing or failed:
-            await message.reply_text(
+            sent = await message.reply_text(
                 make_force_sub_text(joined, len(missing), len(failed)),
                 reply_markup=make_force_sub_keyboard(missing, failed),
             )
+            await protect_start_page(sent)
             raise StopPropagation
 
     plan_name = "🆓 Free"
@@ -77,20 +77,18 @@ async def clean_start(client, message):
         "⚡ Fast processing • Clean filenames • Advanced media tools"
     )
 
-    await message.reply_text(
+    sent = await message.reply_text(
         text,
         reply_markup=main_menu(getattr(client, "is_main_bot", False)),
     )
+    await protect_start_page(sent)
     raise StopPropagation
 
 
 @Client.on_callback_query(filters.regex(r"^start_rename$"), group=-200)
 async def start_rename_action(client, callback_query):
     await callback_query.answer()
-    await callback_query.message.reply_text(
-        "✏️ **Rename:**\n"
-        "Send me the file you want to rename."
-    )
+    await callback_query.message.reply_text("✏️ **Rename:**\nSend me the file you want to rename.")
     raise StopPropagation
 
 
@@ -118,6 +116,7 @@ async def start_from_button(client, callback_query):
                 make_force_sub_text(joined, len(missing), len(failed)),
                 reply_markup=make_force_sub_keyboard(missing, failed),
             )
+            await protect_start_page(callback_query.message)
             raise StopPropagation
 
     plan_name = "🆓 Free"
@@ -141,13 +140,10 @@ async def start_from_button(client, callback_query):
         "⚡ Fast processing • Clean filenames • Advanced media tools"
     )
     try:
-        await callback_query.message.edit_text(
-            text,
-            reply_markup=main_menu(getattr(client, "is_main_bot", False)),
-        )
+        await callback_query.message.edit_text(text, reply_markup=main_menu(getattr(client, "is_main_bot", False)))
     except Exception:
-        await callback_query.message.reply_text(
-            text,
-            reply_markup=main_menu(getattr(client, "is_main_bot", False)),
-        )
+        sent = await callback_query.message.reply_text(text, reply_markup=main_menu(getattr(client, "is_main_bot", False)))
+        await protect_start_page(sent)
+    else:
+        await protect_start_page(callback_query.message)
     raise StopPropagation
