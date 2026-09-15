@@ -18,21 +18,30 @@ def cancel_markup(job_id: str):
 
 
 async def download_job(client: Client, message: Message, job: Job, status: Message) -> int:
-    """Download a job only after the user has selected an operation/name."""
+    """Download a deferred job from the original preserved media object.
+
+    The original incoming Message may be removed by chat cleanup before the user
+    chooses Rename/Convert.  file_id remains a fallback, but the original media
+    object is preferred because it retains the media metadata and is directly
+    accepted by Pyrogram's download_media().
+    """
     if os.path.isfile(job.input_path):
         return os.path.getsize(job.input_path)
 
     expected_size = int(job.extra.get("telegram_file_size", 0) or 0)
+    source = job.extra.get("media") or job.extra.get("file_id")
+    if not source:
+        source = message
+
     os.makedirs(job.work_dir, exist_ok=True)
     await jobs.acquire()
     try:
-        # Never clear a cancellation flag here: a cancel request may arrive
-        # between the action button and the actual Telegram download call.
-        if __import__("helper.utils", fromlist=["is_transfer_cancelled"]).is_transfer_cancelled(job.job_id):
+        from helper.utils import is_transfer_cancelled
+        if is_transfer_cancelled(job.job_id):
             raise AniToonTransferCancelled("Transfer cancelled by user")
 
         result = await client.download_media(
-            message=message,
+            message=source,
             file_name=job.input_path,
             progress=progress_for_pyrogram,
             progress_args=("Downloading", status, time.time(), job.job_id),
@@ -58,7 +67,6 @@ async def download_job(client: Client, message: Message, job: Job, status: Messa
     except FloodWait:
         raise
     finally:
-        # The caller clears the flag only after the whole job is finished.
         jobs.release()
 
 
