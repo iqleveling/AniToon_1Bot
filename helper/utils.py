@@ -78,7 +78,9 @@ def _progress_text(current, total, ud_type, start):
     eta_text = "calculating..."
     if speed > 0 and total >= current:
         eta_text = time_formatter(max(0, int((total - current) / speed)) * 1000)
-    title = "📥 Downloading..." if "upload" not in str(ud_type).lower() else "📤 Uploading..."
+
+    is_upload = "upload" in str(ud_type).lower()
+    title = "📤 Upload Progress" if is_upload else "📥 Download Progress"
     return (
         f"{title}\n"
         f"{_progress_bar(percentage)} {percentage:.2f}%\n\n"
@@ -97,7 +99,7 @@ def _cancel_markup(job_id):
 
 
 async def progress_for_pyrogram(current, total, ud_type, message, start, job_id=None):
-    """Reliably show transfer progress; always allow first and final updates."""
+    """Show the real transfer progress message; never leave only a static Downloading line."""
     if job_id and is_transfer_cancelled(job_id):
         raise AniToonTransferCancelled("Transfer cancelled by user")
     if message is None:
@@ -118,5 +120,4 @@ async def progress_for_pyrogram(current, total, ud_type, message, start, job_id=
         )
         _LAST_PROGRESS_UPDATE[key] = now
     except Exception:
-        # Telegram edit failures must never abort the actual transfer.
         pass
