@@ -61,7 +61,7 @@ async def protect_start_page(message: Any):
 
 
 async def delete_user_job_messages(client, chat_id: int, message_ids):
-    """Explicitly remove the user's source/rename messages after success."""
+    """Explicitly remove only the user's source/rename messages after success."""
     ids = [int(x) for x in (message_ids or []) if x]
     if not ids:
         return
