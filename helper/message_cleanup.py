@@ -60,6 +60,19 @@ async def protect_start_page(message: Any):
     await protect_result(message)
 
 
+async def delete_user_job_messages(client, chat_id: int, message_ids):
+    """Explicitly remove the user's source/rename messages after success."""
+    ids = [int(x) for x in (message_ids or []) if x]
+    if not ids:
+        return
+    async with _state_lock:
+        protected = _protected.get(int(chat_id), set())
+        for message_id in ids:
+            protected.discard(message_id)
+        _last_user_messages[int(chat_id)].difference_update(ids)
+    await delete_messages(client, int(chat_id), ids)
+
+
 async def remember_user_message(message: Any, message_id: int | None = None):
     """Track user messages, but never schedule commands for deletion."""
     if message_id is None:
@@ -86,8 +99,6 @@ async def remember_bot_temporary(chat_id: int, result: Any):
 
 
 async def clear_last_cycle(client, user_id: int):
-    # Kept for compatibility. Selective cleanup is performed automatically
-    # before the next bot-created message.
     return None
 
 
@@ -133,8 +144,6 @@ def install_auto_cleanup(client):
                 chat_id = int(chat_id)
             except (TypeError, ValueError):
                 chat_id = None
-            # Only private user chats are automatically cleaned. Groups and
-            # channels, including private archive/log channels, are untouched.
             if chat_id and chat_id > 0:
                 lock = _locks[chat_id]
                 async with lock:
