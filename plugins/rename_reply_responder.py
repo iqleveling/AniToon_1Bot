@@ -9,6 +9,7 @@ from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from helper.database import db
 from helper.job_transfer import download_job
 from helper.job_state import jobs
+from helper.message_cleanup import delete_user_job_messages, protect_result
 from helper.utils import AniToonTransferCancelled, clear_transfer_cancel, humanbytes
 from plugins.file_action_fix import _deliver_output
 from plugins.rename import _base_without_extension, _extension, _safe_filename
@@ -19,7 +20,6 @@ NAME_ACTIONS = {"custom_name", "convert_name"}
 
 
 async def _find_name_job(user_id: int):
-    """Find the active rename/convert job instead of assuming the first job is it."""
     try:
         user_jobs = await jobs.get_user_jobs(user_id)
     except Exception:
@@ -31,7 +31,6 @@ async def _find_name_job(user_id: int):
 
 
 async def _download_source(client: Client, message, job, status):
-    """Use the preserved original Message first; file_id is a fallback."""
     source = (job.extra or {}).get("source_message")
     if not source:
         source = (job.extra or {}).get("media")
@@ -44,9 +43,14 @@ async def _download_source(client: Client, message, job, status):
     return await download_job(client, source, job, status)
 
 
+async def _cleanup_successful_user_input(client, message, job):
+    """Delete only the user's source file and filename after a successful result."""
+    ids = [job.source_message_id, getattr(message, "id", None)]
+    await delete_user_job_messages(client, message.chat.id, ids)
+
+
 @Client.on_message(filters.private & filters.text, group=-1200)
 async def reliable_rename_reply(client, message):
-    """Accept the filename from active job state, even if the original file message was cleaned up."""
     if not message.text or message.text.startswith("/"):
         return
 
@@ -73,23 +77,22 @@ async def reliable_rename_reply(client, message):
 
         status = await message.reply_text(
             "📥 **Downloading...**",
-            reply_markup=InlineKeyboardMarkup(
-                [[InlineKeyboardButton("❌ Cancel", callback_data=f"transfer:cancel:{job.job_id}")]]
-            ),
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data=f"transfer:cancel:{job.job_id}")]]),
         )
         try:
             await _download_source(client, message, job, status)
             await status.edit_text("⚙️ **Processing...**")
-
             output_path = os.path.join(job.work_dir, name)
             if not await convert_media(job.input_path, output_path, ext):
                 raise RuntimeError("FFmpeg conversion failed")
 
-            await _deliver_output(client, job, output_path, name, status)
+            results = await _deliver_output(client, job, output_path, name, status)
+            for result in results or []:
+                await protect_result(result)
             await db.update_usage(job.user_id, job.bot_id, os.path.getsize(output_path))
-            await status.edit_text(
-                f"✅ **Conversion Complete!**\n\n📂 `{name}`\n📦 `{humanbytes(os.path.getsize(output_path))}`"
-            )
+            await status.edit_text(f"✅ **Conversion Complete!**\n\n📂 `{name}`\n📦 `{humanbytes(os.path.getsize(output_path))}`")
+            await protect_result(status)
+            await _cleanup_successful_user_input(client, message, job)
         except AniToonTransferCancelled:
             await status.edit_text("❌ **Processing cancelled.**")
         except Exception as exc:
@@ -112,22 +115,21 @@ async def reliable_rename_reply(client, message):
         output_path = os.path.join(job.work_dir, name)
         status = await message.reply_text(
             "📥 **Downloading...**",
-            reply_markup=InlineKeyboardMarkup(
-                [[InlineKeyboardButton("❌ Cancel", callback_data=f"transfer:cancel:{job.job_id}")]]
-            ),
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data=f"transfer:cancel:{job.job_id}")]]),
         )
         try:
             await _download_source(client, message, job, status)
             os.replace(job.input_path, output_path)
-
             if job.extra.get("rename_output_mode") == "video":
                 job.mime_type = "video/mp4"
 
-            await _deliver_output(client, job, output_path, name, status)
+            results = await _deliver_output(client, job, output_path, name, status)
+            for result in results or []:
+                await protect_result(result)
             await db.update_usage(job.user_id, job.bot_id, os.path.getsize(output_path))
-            await status.edit_text(
-                f"✅ **Rename Complete!**\n\n📂 `{name}`\n📦 `{humanbytes(os.path.getsize(output_path))}`"
-            )
+            await status.edit_text(f"✅ **Rename Complete!**\n\n📂 `{name}`\n📦 `{humanbytes(os.path.getsize(output_path))}`")
+            await protect_result(status)
+            await _cleanup_successful_user_input(client, message, job)
         except AniToonTransferCancelled:
             await status.edit_text("❌ **Processing cancelled.**")
         except Exception as exc:
