@@ -8,7 +8,7 @@ from pyrogram.errors import FloodWait
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from helper.job_state import Job, jobs
-from helper.utils import AniToonTransferCancelled, clear_transfer_cancel, humanbytes, progress_for_pyrogram
+from helper.utils import AniToonTransferCancelled, humanbytes, progress_for_pyrogram
 
 
 def cancel_markup(job_id: str):
@@ -18,20 +18,12 @@ def cancel_markup(job_id: str):
 
 
 async def download_job(client: Client, message: Message, job: Job, status: Message) -> int:
-    """Download a deferred job from the original preserved media object.
-
-    The original incoming Message may be removed by chat cleanup before the user
-    chooses Rename/Convert.  file_id remains a fallback, but the original media
-    object is preferred because it retains the media metadata and is directly
-    accepted by Pyrogram's download_media().
-    """
+    """Download a deferred job from its preserved Telegram Message."""
     if os.path.isfile(job.input_path):
         return os.path.getsize(job.input_path)
 
     expected_size = int(job.extra.get("telegram_file_size", 0) or 0)
-    source = job.extra.get("media") or job.extra.get("file_id")
-    if not source:
-        source = message
+    source = job.extra.get("source_message") or job.extra.get("file_id") or message
 
     os.makedirs(job.work_dir, exist_ok=True)
     await jobs.acquire()
