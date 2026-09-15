@@ -45,13 +45,8 @@ async def _download_source(client: Client, message, job, status):
     return await download_job(client, source, job, status)
 
 
-async def _processing_progress(status, job, current, total, start_time, force=False):
-    """Show FFmpeg processing progress every 3 seconds.
-
-    The 3x multiplier is display-only.  Actual FFmpeg byte/time processing is
-    never changed, so the conversion remains correct while the UI shows the
-    requested multiplied MB figure.
-    """
+async def _processing_progress(status, job, current_bytes, total_bytes, start_time, force=False):
+    """Show processing progress every 3 seconds with a display-only 3x MB value."""
     if status is None:
         return
     now = time.time()
@@ -59,8 +54,8 @@ async def _processing_progress(status, job, current, total, start_time, force=Fa
     if not force and now - last < PROCESSING_INTERVAL:
         return
 
-    current = max(0.0, float(current or 0.0))
-    total = max(0.0, float(total or 0.0))
+    current = max(0.0, float(current_bytes or 0.0))
+    total = max(0.0, float(total_bytes or 0.0))
     percent = min(100.0, (current * 100.0 / total)) if total else 0.0
     shown_current = current * 3.0
     shown_total = total * 3.0 if total else 0.0
@@ -128,17 +123,22 @@ async def reliable_rename_reply(client, message):
             await status.edit_text("⚙️ **Processing...**")
             job._last_processing_progress = 0.0
             processing_start = time.time()
-
-            async def processing_callback(current, total):
-                await _processing_progress(status, job, current, total, processing_start)
-
             output_path = os.path.join(job.work_dir, name)
+            input_size = max(1, os.path.getsize(job.input_path))
+
+            async def processing_callback(_current_seconds, _total_seconds):
+                # FFmpeg reports time, not bytes. Read the growing output file so
+                # the progress MB shown to users is based on real processed data.
+                current_size = os.path.getsize(output_path) if os.path.isfile(output_path) else 0
+                await _processing_progress(status, job, current_size, input_size, processing_start)
+
             if not await convert_media(job.input_path, output_path, ext, progress_callback=processing_callback):
                 raise RuntimeError("FFmpeg conversion failed")
-            await _processing_progress(status, job, 1, 1, processing_start, force=True)
+            final_size = os.path.getsize(output_path) if os.path.isfile(output_path) else input_size
+            await _processing_progress(status, job, final_size, input_size, processing_start, force=True)
 
-            # Protect the completed status BEFORE sending the result. The
-            # auto-cleanup wrapper runs before send_video/send_document.
+            # Protect the transfer status BEFORE sending the result. Cleanup
+            # runs before send_video/send_document, so it must already be safe.
             await protect_message(status.chat.id, status.id)
             results = await _deliver_output(client, job, output_path, name, status)
             for result in results or []:
@@ -180,7 +180,6 @@ async def reliable_rename_reply(client, message):
             if job.extra.get("rename_output_mode") == "video":
                 job.mime_type = "video/mp4"
 
-            # Keep the status alive while the upload callback edits it.
             await protect_message(status.chat.id, status.id)
             results = await _deliver_output(client, job, output_path, name, status)
             for result in results or []:
