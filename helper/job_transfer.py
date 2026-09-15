@@ -8,7 +8,7 @@ from pyrogram.errors import FloodWait
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from helper.job_state import Job, jobs
-from helper.utils import AniToonTransferCancelled, humanbytes, progress_for_pyrogram
+from helper.utils import AniToonTransferCancelled, humanbytes, progress_for_pyrogram, reset_progress
 
 
 def cancel_markup(job_id: str):
@@ -18,7 +18,7 @@ def cancel_markup(job_id: str):
 
 
 async def download_job(client: Client, message: Message, job: Job, status: Message) -> int:
-    """Download a deferred job from its preserved Telegram Message."""
+    """Download a deferred job and always expose the complete transfer progress."""
     if os.path.isfile(job.input_path):
         return os.path.getsize(job.input_path)
 
@@ -32,11 +32,16 @@ async def download_job(client: Client, message: Message, job: Job, status: Messa
         if is_transfer_cancelled(job.job_id):
             raise AniToonTransferCancelled("Transfer cancelled by user")
 
+        reset_progress(job.job_id)
+        started = time.time()
+        if expected_size:
+            await progress_for_pyrogram(0, expected_size, "Downloading", status, started, job.job_id)
+
         result = await client.download_media(
             message=source,
             file_name=job.input_path,
             progress=progress_for_pyrogram,
-            progress_args=("Downloading", status, time.time(), job.job_id),
+            progress_args=("Downloading", status, started, job.job_id),
         )
         path = result if isinstance(result, str) and os.path.isfile(result) else job.input_path
         if path != job.input_path and os.path.isfile(path):
@@ -48,6 +53,16 @@ async def download_job(client: Client, message: Message, job: Job, status: Messa
             raise RuntimeError(
                 f"Incomplete download: expected {humanbytes(expected_size)}, got {humanbytes(actual)}"
             )
+
+        # Force the final 100% Downloading state before moving to Processing.
+        await progress_for_pyrogram(
+            actual,
+            expected_size or actual,
+            "Downloading",
+            status,
+            started,
+            job.job_id,
+        )
         await jobs.update(job.job_id, extra={**job.extra, "downloaded_size": actual})
         return actual
     except AniToonTransferCancelled:
