@@ -4,7 +4,7 @@ import os
 import shutil
 
 from pyrogram import Client, StopPropagation, filters
-from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
+from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from helper.database import db
 from helper.job_transfer import download_job
@@ -30,13 +30,20 @@ async def _find_name_job(user_id: int):
     return None
 
 
-@Client.on_message(filters.private & filters.text, group=-1200)
-async def reliable_rename_reply(client: Client, message: Message):
-    """Accept the filename whether Telegram sends it as a ForceReply or plain text.
+async def _download_source(client: Client, message, job, status):
+    """Download using the saved Telegram file_id so cleanup cannot delete the source."""
+    file_id = (job.extra or {}).get("file_id")
+    source = file_id
+    if not source:
+        source = await client.get_messages(message.chat.id, job.source_message_id)
+    if not source:
+        raise RuntimeError("Original file could not be located")
+    return await download_job(client, source, job, status)
 
-    The active job state is authoritative. This also runs before the older rename
-    handlers so duplicate handlers cannot consume the filename first.
-    """
+
+@Client.on_message(filters.private & filters.text, group=-1200)
+async def reliable_rename_reply(client: Client, message):
+    """Accept the filename from active job state, even if the original file message was cleaned up."""
     if not message.text or message.text.startswith("/"):
         return
 
@@ -68,11 +75,7 @@ async def reliable_rename_reply(client: Client, message: Message):
             ),
         )
         try:
-            source = await client.get_messages(message.chat.id, job.source_message_id)
-            if not source:
-                raise RuntimeError("Original file message could not be found")
-
-            await download_job(client, source, job, status)
+            await _download_source(client, message, job, status)
             await status.edit_text("⚙️ **Processing...**")
 
             output_path = os.path.join(job.work_dir, name)
@@ -111,11 +114,7 @@ async def reliable_rename_reply(client: Client, message: Message):
             ),
         )
         try:
-            source = await client.get_messages(message.chat.id, job.source_message_id)
-            if not source:
-                raise RuntimeError("Original file message could not be found")
-
-            await download_job(client, source, job, status)
+            await _download_source(client, message, job, status)
             os.replace(job.input_path, output_path)
 
             if job.extra.get("rename_output_mode") == "video":
