@@ -142,7 +142,7 @@ async def repaired_file_download(client: Client, message: Message):
     work_dir = os.path.join("downloads", str(user_id), job_id)
     os.makedirs(work_dir, exist_ok=True)
     input_path = os.path.join(work_dir, original_name)
-    job = Job(job_id=job_id, user_id=user_id, bot_id=bot_id, source_message_id=message.id, work_dir=work_dir, input_path=input_path, original_name=original_name, mime_type=mime_type, extra={"extension": extension, "file_id": file_id, "media": media, "user_data": user_data, "used_before": used, "telegram_file_size": expected_size})
+    job = Job(job_id=job_id, user_id=user_id, bot_id=bot_id, source_message_id=message.id, work_dir=work_dir, input_path=input_path, original_name=original_name, mime_type=mime_type, extra={"extension": extension, "file_id": file_id, "source_message": message, "user_data": user_data, "used_before": used, "telegram_file_size": expected_size})
     if not await jobs.register(job):
         await message.reply_text("⏳ **You already have an active file job.**\n\nPlease finish or cancel it first.")
         raise StopPropagation
@@ -195,8 +195,6 @@ async def convert_entry_fix(client, cb):
 
 @Client.on_message(filters.private & filters.reply & filters.text, group=-1000)
 async def rename_reply_fix(client: Client, message: Message):
-    # Kept for compatibility with the older reply-based flow. The newer
-    # rename_reply_responder handles normal text replies before this handler.
     job = await jobs.get_user_job(message.from_user.id)
     if not job or job.selected_action not in {"custom_name", "convert_name"}:
         return
