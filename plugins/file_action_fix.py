@@ -15,6 +15,7 @@ from helper.ffmpeg import convert_media, get_video_info, make_streamable
 from helper.job_state import Job, jobs
 from helper.job_transfer import download_job
 from helper.large_video import is_large_video, make_thumbnail, split_video_for_telegram
+from helper.message_cleanup import protect_message, protect_result
 from helper.plans import get_plan
 from helper.utils import AniToonTransferCancelled, clear_transfer_cancel, humanbytes, progress_for_pyrogram, reset_progress
 from plugins.rename import _ask_name, _base_without_extension, _extension, _media_from_message, _safe_filename, _user_context
@@ -31,6 +32,8 @@ async def _send_video(client: Client, job: Job, path: str, filename: str, status
     upload_name = filename
     ext = _extension(filename)
 
+    # Every video output is normalized to MP4 before Telegram delivery.
+    # Faststart places the MP4 metadata at the front so Telegram can stream it.
     if ext != "mp4":
         mp4_name = f"{_base_without_extension(filename)}.mp4"
         mp4_path = os.path.join(job.work_dir, f".upload_{uuid.uuid4().hex}.mp4")
@@ -106,11 +109,13 @@ async def _deliver_output(client: Client, job: Job, path: str, filename: str, st
                 sent = await _send_video(client, job, part, os.path.basename(part), status)
                 if not sent:
                     raise RuntimeError(f"Upload returned no message for part {index}/{total}")
+                await protect_result(sent)
                 sent_messages.append(sent)
                 await archive_message(client, sent)
             return sent_messages
     sent = await _send_plain_output(client, job, path, filename, status)
     if sent:
+        await protect_result(sent)
         await archive_message(client, sent)
     return [sent] if sent else []
 
@@ -146,6 +151,10 @@ async def repaired_file_download(client: Client, message: Message):
     if not await jobs.register(job):
         await message.reply_text("⏳ **You already have an active file job.**\n\nPlease finish or cancel it first.")
         raise StopPropagation
+
+    # Keep the source file alive until this job has downloaded it. It can be
+    # cleaned automatically only after the processing cycle is finished.
+    await protect_message(message.chat.id, message.id)
 
     text = ("📂 **File Detected**\n" "━━━━━━━━━━━━━━━━━━━━\n" f"📄 **Name**\n`{original_name}`\n" "━━━━━━━━━━━━━━━━━━━━\n" f"📦 **Size**\n`{humanbytes(expected_size)}`\n" "━━━━━━━━━━━━━━━━━━━━\n" f"🆔 **File ID**\n`{file_id}`\n\n" "Choose an operation before downloading:")
     status = await message.reply_text(text, reply_markup=file_action_menu(job_id))
@@ -194,7 +203,7 @@ async def convert_entry_fix(client, cb):
 
 
 @Client.on_message(filters.private & filters.reply & filters.text, group=-1000)
-async def rename_reply_fix(client: Client, message: Message):
+async def rename_reply_fix(client, message: Message):
     job = await jobs.get_user_job(message.from_user.id)
     if not job or job.selected_action not in {"custom_name", "convert_name"}:
         return
@@ -202,7 +211,7 @@ async def rename_reply_fix(client: Client, message: Message):
 
 
 @Client.on_message(filters.private & (filters.document | filters.video | filters.audio), group=-999)
-async def retry_file_when_waiting(client: Client, message: Message):
+async def retry_file_when_waiting(client, message: Message):
     job = await jobs.get_user_job(message.from_user.id)
     if not job or job.selected_action not in WAITING_ACTIONS:
         return
