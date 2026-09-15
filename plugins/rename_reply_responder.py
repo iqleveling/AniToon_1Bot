@@ -31,9 +31,12 @@ async def _find_name_job(user_id: int):
 
 
 async def _download_source(client: Client, message, job, status):
-    """Download using the saved Telegram file_id so cleanup cannot delete the source."""
-    file_id = (job.extra or {}).get("file_id")
-    source = file_id
+    """Use the preserved original Message first; file_id is a fallback."""
+    source = (job.extra or {}).get("source_message")
+    if not source:
+        source = (job.extra or {}).get("media")
+    if not source:
+        source = (job.extra or {}).get("file_id")
     if not source:
         source = await client.get_messages(message.chat.id, job.source_message_id)
     if not source:
@@ -42,7 +45,7 @@ async def _download_source(client: Client, message, job, status):
 
 
 @Client.on_message(filters.private & filters.text, group=-1200)
-async def reliable_rename_reply(client: Client, message):
+async def reliable_rename_reply(client, message):
     """Accept the filename from active job state, even if the original file message was cleaned up."""
     if not message.text or message.text.startswith("/"):
         return
