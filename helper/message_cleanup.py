@@ -48,7 +48,7 @@ async def protect_message(chat_id: int, message_id: int | None):
 
 
 async def protect_transfer_message(message: Any):
-    """Permanently protect a Downloading/Uploading status for this process."""
+    """Keep a download/upload progress message safe from auto-cleanup while active."""
     if message is None:
         return
     chat = getattr(message, "chat", None)
@@ -60,7 +60,26 @@ async def protect_transfer_message(message: Any):
         await protect_message(int(chat_id), int(message_id))
 
 
+async def delete_transfer_message(client, message: Any):
+    """Delete an active transfer status only after its transfer/result succeeds."""
+    if message is None:
+        return
+    chat = getattr(message, "chat", None)
+    chat_id = getattr(chat, "id", None)
+    message_id = getattr(message, "id", None)
+    if not chat_id or not message_id:
+        return
+
+    async with _state_lock:
+        _protected[int(chat_id)].discard(int(message_id))
+        _transfer_messages[int(chat_id)].discard(int(message_id))
+        _last_bot_temporary[int(chat_id)].discard(int(message_id))
+        _last_user_messages[int(chat_id)].discard(int(message_id))
+    await delete_messages(client, int(chat_id), [int(message_id)])
+
+
 async def protect_result(message: Any):
+    """Successful output messages are permanent for the current process."""
     if message is None:
         return
     chat = getattr(message, "chat", None)
