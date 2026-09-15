@@ -26,7 +26,6 @@ def clear_transfer_cancel(job_id: str):
 
 
 def reset_progress(job_id: str):
-    """Allow the next transfer stage to update immediately."""
     if job_id:
         _LAST_PROGRESS_UPDATE.pop(str(job_id), None)
 
@@ -36,7 +35,6 @@ def is_transfer_cancelled(job_id: str) -> bool:
 
 
 def humanbytes(size):
-    """Convert raw bytes to a compact human-readable value."""
     if not size:
         return "0 B"
     size = float(size)
@@ -67,7 +65,6 @@ def time_formatter(milliseconds: int) -> str:
 
 
 def _progress_bar(percentage: float) -> str:
-    """Render a readable 24-cell progress bar without the old zero-percent UI."""
     completed = max(0, min(24, int((percentage / 100.0) * 24)))
     return "█" * completed + "░" * (24 - completed)
 
@@ -78,19 +75,14 @@ def _progress_text(current, total, ud_type, start):
     elapsed = max(0.001, time.time() - start)
     speed = current / elapsed
     percentage = (current * 100 / total) if total else 0.0
-
+    eta_text = "calculating..."
     if speed > 0 and total >= current:
-        eta = max(0, int((total - current) / speed))
-        eta_text = time_formatter(eta * 1000)
-    else:
-        eta_text = "calculating..."
-
+        eta_text = time_formatter(max(0, int((total - current) / speed)) * 1000)
     title = "📥 Downloading..." if "upload" not in str(ud_type).lower() else "📤 Uploading..."
     return (
         f"{title}\n"
         f"{_progress_bar(percentage)} {percentage:.2f}%\n\n"
         f"📦 Size: {humanbytes(current)} / {humanbytes(total)}\n"
-        f"✅ Completed: {percentage:.2f}%\n"
         f"🚀 Speed: {humanbytes(speed)}/s\n"
         f"⏱ ETA: {eta_text}"
     )
@@ -104,27 +96,19 @@ def _cancel_markup(job_id):
     )
 
 
-async def progress_for_pyrogram(
-    current,
-    total,
-    ud_type,
-    message,
-    start,
-    job_id=None,
-):
-    """Update one status message with full numeric transfer details."""
+async def progress_for_pyrogram(current, total, ud_type, message, start, job_id=None):
+    """Reliably show transfer progress; always allow first and final updates."""
     if job_id and is_transfer_cancelled(job_id):
         raise AniToonTransferCancelled("Transfer cancelled by user")
-
     if message is None:
         return
 
     key = str(job_id) if job_id else str(id(message))
     now = time.time()
-    interval = getattr(Config, "PROGRESS_UPDATE_INTERVAL", 1.5)
-    last = _LAST_PROGRESS_UPDATE.get(key, 0.0)
-
-    if current < total and now - last < interval:
+    interval = max(1.0, float(getattr(Config, "PROGRESS_UPDATE_INTERVAL", 1.5)))
+    last = _LAST_PROGRESS_UPDATE.get(key)
+    is_final = bool(total and current >= total)
+    if last is not None and not is_final and now - last < interval:
         return
 
     try:
@@ -134,4 +118,5 @@ async def progress_for_pyrogram(
         )
         _LAST_PROGRESS_UPDATE[key] = now
     except Exception:
+        # Telegram edit failures must never abort the actual transfer.
         pass
