@@ -30,7 +30,6 @@ async def _send_video(client: Client, job: Job, path: str, filename: str, status
     upload_path = path
     upload_name = filename
     ext = _extension(filename)
-
     if ext != "mp4":
         mp4_name = f"{_base_without_extension(filename)}.mp4"
         mp4_path = os.path.join(job.work_dir, f".upload_{uuid.uuid4().hex}.mp4")
@@ -38,25 +37,18 @@ async def _send_video(client: Client, job: Job, path: str, filename: str, status
             raise RuntimeError("Could not create a Telegram-compatible MP4 video")
         upload_path = mp4_path
         upload_name = mp4_name
-
-    # Faststart is useful for normal files. For very large parts, avoid making
-    # a second multi-gigabyte temporary copy on disk; the segment is already a
-    # valid MP4 and Telegram can play it as a native video.
     if not is_large_video(upload_path):
         stream_path = os.path.join(job.work_dir, f".stream_{uuid.uuid4().hex}.mp4")
         ready = await make_streamable(upload_path, stream_path)
         if ready and os.path.isfile(ready) and os.path.getsize(ready) > 0:
             upload_path = ready
-
     duration, width, height = await get_video_info(upload_path)
     if not duration or not width or not height:
         raise RuntimeError("Video metadata could not be read after processing")
-
     thumb = await make_thumbnail(upload_path, job.work_dir)
     progress = progress_for_pyrogram if status else None
     progress_args = ("Uploading", status, time.time(), job.job_id) if status else None
     reset_progress(job.job_id)
-
     kwargs = {
         "caption": None,
         "duration": max(1, int(round(duration))),
@@ -70,7 +62,6 @@ async def _send_video(client: Client, job: Job, path: str, filename: str, status
     if progress:
         kwargs["progress"] = progress
         kwargs["progress_args"] = progress_args
-
     try:
         return await client.send_video(job.user_id, upload_path, **kwargs)
     except Exception as first_error:
@@ -83,9 +74,7 @@ async def _send_video(client: Client, job: Job, path: str, filename: str, status
                 document_kwargs["progress_args"] = progress_args
             return await client.send_document(job.user_id, upload_path, **document_kwargs)
         except Exception as second_error:
-            raise RuntimeError(
-                f"Video upload failed: {str(first_error)[:700]} | document fallback: {str(second_error)[:700]}"
-            ) from second_error
+            raise RuntimeError(f"Video upload failed: {str(first_error)[:700]} | document fallback: {str(second_error)[:700]}") from second_error
 
 
 async def _send_plain_output(client: Client, job: Job, path: str, filename: str, status: Message | None = None):
@@ -93,10 +82,8 @@ async def _send_plain_output(client: Client, job: Job, path: str, filename: str,
     mime = job.mime_type or ""
     if not os.path.isfile(path) or os.path.getsize(path) <= 0:
         raise RuntimeError("Processed output is missing or empty")
-
     if mime.startswith("video/") or ext in VIDEO_EXTENSIONS:
         return await _send_video(client, job, path, filename, status)
-
     progress = progress_for_pyrogram if status else None
     args = ("Uploading", status, time.time(), job.job_id) if status else None
     if mime.startswith("audio/") or ext in {"mp3", "m4a", "aac", "flac", "ogg", "wav", "opus"}:
@@ -104,12 +91,10 @@ async def _send_plain_output(client: Client, job: Job, path: str, filename: str,
             return await client.send_audio(job.user_id, path, caption=None, progress=progress, progress_args=args) if progress else await client.send_audio(job.user_id, path, caption=None)
         except RPCError:
             return await client.send_document(job.user_id, path, caption=None, progress=progress, progress_args=args) if progress else await client.send_document(job.user_id, path, caption=None)
-
     return await client.send_document(job.user_id, path, caption=None, progress=progress, progress_args=args) if progress else await client.send_document(job.user_id, path, caption=None)
 
 
-async def _deliver_output(client, job: Job, path: str, filename: str, status: Message | None = None):
-    """Send to the user and archive only messages that were actually delivered."""
+async def _deliver_output(client: Client, job: Job, path: str, filename: str, status: Message | None = None):
     if (job.mime_type or "").startswith("video/") or _extension(filename) in VIDEO_EXTENSIONS:
         if is_large_video(path):
             parts = await split_video_for_telegram(path, job.work_dir, filename)
@@ -124,7 +109,6 @@ async def _deliver_output(client, job: Job, path: str, filename: str, status: Me
                 sent_messages.append(sent)
                 await archive_message(client, sent)
             return sent_messages
-
     sent = await _send_plain_output(client, job, path, filename, status)
     if sent:
         await archive_message(client, sent)
@@ -143,44 +127,23 @@ async def repaired_file_download(client: Client, message: Message):
     media = _media_from_message(message)
     if not media:
         raise StopPropagation
-
     expected_size = int(getattr(media, "file_size", 0) or 0)
     original_name = _safe_filename(getattr(media, "file_name", None) or f"file_{message.id}")
     extension = _extension(original_name)
     mime_type = getattr(media, "mime_type", None) or ""
     file_id = getattr(media, "file_id", "") or ""
-
     if used >= plan.daily_limit:
-        await message.reply_text(
-            "🚫 **Daily Limit Reached!**\n\n"
-            f"Current Plan: {plan.name}\nDaily Limit: `{humanbytes(plan.daily_limit)}`\nUsed: `{humanbytes(used)}`",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("💎 Upgrade", callback_data="upgrade")]]),
-        )
+        await message.reply_text("🚫 **Daily Limit Reached!**\n\n" f"Current Plan: {plan.name}\nDaily Limit: `{humanbytes(plan.daily_limit)}`\nUsed: `{humanbytes(used)}`", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("💎 Upgrade", callback_data="upgrade")]]))
         raise StopPropagation
-
     job_id = uuid.uuid4().hex[:12]
     work_dir = os.path.join("downloads", str(user_id), job_id)
     os.makedirs(work_dir, exist_ok=True)
     input_path = os.path.join(work_dir, original_name)
-    job = Job(
-        job_id=job_id, user_id=user_id, bot_id=bot_id, source_message_id=message.id,
-        work_dir=work_dir, input_path=input_path, original_name=original_name, mime_type=mime_type,
-        extra={"extension": extension, "user_data": user_data, "used_before": used, "telegram_file_size": expected_size},
-    )
+    job = Job(job_id=job_id, user_id=user_id, bot_id=bot_id, source_message_id=message.id, work_dir=work_dir, input_path=input_path, original_name=original_name, mime_type=mime_type, extra={"extension": extension, "user_data": user_data, "used_before": used, "telegram_file_size": expected_size, "file_id": file_id})
     if not await jobs.register(job):
         await message.reply_text("⏳ **You already have an active file job.**\n\nPlease finish or cancel it first.")
         raise StopPropagation
-
-    text = (
-        "📂 **File Detected**\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        f"📄 **Name**\n`{original_name}`\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        f"📦 **Size**\n`{humanbytes(expected_size)}`\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        f"🆔 **File ID**\n`{file_id}`\n\n"
-        "Choose an operation before downloading:"
-    )
+    text = ("📂 **File Detected**\n" "━━━━━━━━━━━━━━━━━━━━\n" f"📄 **Name**\n`{original_name}`\n" "━━━━━━━━━━━━━━━━━━━━\n" f"📦 **Size**\n`{humanbytes(expected_size)}`\n" "━━━━━━━━━━━━━━━━━━━━\n" f"🆔 **File ID**\n`{file_id}`\n\n" "Choose an operation before downloading:")
     status = await message.reply_text(text, reply_markup=file_action_menu(job_id))
     await jobs.update(job_id, extra={**job.extra, "status_message_id": status.id})
     raise StopPropagation
@@ -227,7 +190,7 @@ async def convert_entry_fix(client, cb):
 
 
 @Client.on_message(filters.private & filters.reply & filters.text, group=-1000)
-async def rename_reply_fix(client, message: Message):
+async def rename_reply_fix(client: Client, message: Message):
     job = await jobs.get_user_job(message.from_user.id)
     if not job or job.selected_action not in {"custom_name", "convert_name"}:
         return
@@ -235,7 +198,6 @@ async def rename_reply_fix(client, message: Message):
     if not text:
         await message.reply_text("❌ **Please send a valid filename.**")
         raise StopPropagation
-
     if job.selected_action == "convert_name":
         ext = job.output_ext
         if not ext:
@@ -246,7 +208,7 @@ async def rename_reply_fix(client, message: Message):
             name = f"{_base_without_extension(name)}.{ext}"
         status = await message.reply_text("📥 **Downloading...**", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data=f"transfer:cancel:{job.job_id}")]]))
         try:
-            await download_job(client, await client.get_messages(message.chat.id, job.source_message_id), job, status)
+            await download_job(client, message, job, status)
             await status.edit_text("⚙️ **Processing...**", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data=f"transfer:cancel:{job.job_id}")]]))
             output_path = os.path.join(job.work_dir, name)
             if not await convert_media(job.input_path, output_path, ext):
@@ -263,7 +225,6 @@ async def rename_reply_fix(client, message: Message):
             shutil.rmtree(job.work_dir, ignore_errors=True)
             await jobs.remove(job.job_id)
         raise StopPropagation
-
     ext = _extension(job.original_name)
     name = _safe_filename(text)
     if not _extension(name) and ext:
@@ -273,7 +234,7 @@ async def rename_reply_fix(client, message: Message):
     output_path = os.path.join(job.work_dir, name)
     status = await message.reply_text("📥 **Downloading...**", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data=f"transfer:cancel:{job.job_id}")]]))
     try:
-        await download_job(client, await client.get_messages(message.chat.id, job.source_message_id), job, status)
+        await download_job(client, message, job, status)
         os.replace(job.input_path, output_path)
         if job.extra.get("rename_output_mode") == "video":
             job.mime_type = "video/mp4"
