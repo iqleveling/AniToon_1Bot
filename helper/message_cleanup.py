@@ -6,12 +6,13 @@ import types
 from collections import defaultdict
 from typing import Any
 
-# Temporary interaction messages are cleaned when the bot sends a new message.
-# Commands, the /start page, source files that are still being processed, and
-# successful result files are explicitly protected.
+# Temporary interaction messages are cleaned when a new bot message is sent.
+# Commands, the /start page, source files that are still being processed,
+# transfer status messages, and successful result files are protected.
 _last_user_messages: dict[int, set[int]] = defaultdict(set)
 _last_bot_temporary: dict[int, set[int]] = defaultdict(set)
 _protected: dict[int, set[int]] = defaultdict(set)
+_transfer_messages: dict[int, set[int]] = defaultdict(set)
 _locks: defaultdict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
 _state_lock = asyncio.Lock()
 
@@ -23,7 +24,7 @@ def _is_command(message: Any) -> bool:
     return bool(_COMMAND_RE.match(str(text).strip()))
 
 
-async def delete_messages(client, chat_id: int, message_ids=None):
+async def delete_messages(client, chat_id, message_ids=None):
     ids = [int(x) for x in (message_ids or []) if x]
     if not ids:
         return
@@ -44,6 +45,19 @@ async def protect_message(chat_id: int, message_id: int | None):
         _protected[int(chat_id)].add(int(message_id))
         _last_user_messages[int(chat_id)].discard(int(message_id))
         _last_bot_temporary[int(chat_id)].discard(int(message_id))
+
+
+async def protect_transfer_message(message: Any):
+    """Permanently protect a Downloading/Uploading status for this process."""
+    if message is None:
+        return
+    chat = getattr(message, "chat", None)
+    chat_id = getattr(chat, "id", None)
+    message_id = getattr(message, "id", None)
+    if chat_id and message_id:
+        async with _state_lock:
+            _transfer_messages[int(chat_id)].add(int(message_id))
+        await protect_message(int(chat_id), int(message_id))
 
 
 async def protect_result(message: Any):
@@ -67,8 +81,10 @@ async def delete_user_job_messages(client, chat_id: int, message_ids):
         return
     async with _state_lock:
         protected = _protected.get(int(chat_id), set())
+        transfer = _transfer_messages.get(int(chat_id), set())
         for message_id in ids:
             protected.discard(message_id)
+            transfer.discard(message_id)
         _last_user_messages[int(chat_id)].difference_update(ids)
     await delete_messages(client, int(chat_id), ids)
 
@@ -92,9 +108,10 @@ async def remember_bot_temporary(chat_id: int, result: Any):
     results = result if isinstance(result, (list, tuple)) else [result]
     async with _state_lock:
         protected = _protected[int(chat_id)]
+        transfer = _transfer_messages[int(chat_id)]
         for item in results:
             message_id = getattr(item, "id", None)
-            if message_id and int(message_id) not in protected:
+            if message_id and int(message_id) not in protected and int(message_id) not in transfer:
                 _last_bot_temporary[int(chat_id)].add(int(message_id))
 
 
@@ -111,7 +128,8 @@ async def _cleanup_before_new_bot_message(client, chat_id: int):
         return
     async with _state_lock:
         protected = _protected.get(chat_id, set())
-        bot_ids = [x for x in _last_bot_temporary.get(chat_id, set()) if x not in protected]
+        transfer = _transfer_messages.get(chat_id, set())
+        bot_ids = [x for x in _last_bot_temporary.get(chat_id, set()) if x not in protected and x not in transfer]
         user_ids = [x for x in _last_user_messages.get(chat_id, set()) if x not in protected]
         _last_bot_temporary[chat_id].clear()
         _last_user_messages[chat_id].clear()
