@@ -13,7 +13,6 @@ from helper.archive_result import archive_message
 from helper.database import db
 from helper.ffmpeg import convert_media, get_video_info, make_streamable
 from helper.job_state import Job, jobs
-from helper.job_transfer import download_job
 from helper.large_video import is_large_video, make_thumbnail, split_video_for_telegram
 from helper.message_cleanup import protect_message, protect_result
 from helper.plans import get_plan
@@ -32,11 +31,19 @@ async def _send_video(client: Client, job: Job, path: str, filename: str, status
     upload_name = filename
     ext = _extension(filename)
 
+    # Tell the user that the output is being prepared before any potentially
+    # slow remux/conversion. This prevents an apparent "stuck" Processing state.
+    if status:
+        await protect_message(status.chat.id, status.id)
+        await status.edit_text("📤 **Uploading...**\n\nPreparing video for Telegram...")
+        reset_progress(job.job_id)
+
     # Every video output is normalized to MP4 before Telegram delivery.
-    # Faststart places the MP4 metadata at the front so Telegram can stream it.
     if ext != "mp4":
         mp4_name = f"{_base_without_extension(filename)}.mp4"
         mp4_path = os.path.join(job.work_dir, f".upload_{uuid.uuid4().hex}.mp4")
+        if status:
+            await status.edit_text("📤 **Uploading...**\n\nPreparing video format...")
         if not await convert_media(path, mp4_path, "mp4"):
             raise RuntimeError("Could not create a Telegram-compatible MP4 video")
         upload_path = mp4_path
@@ -44,6 +51,8 @@ async def _send_video(client: Client, job: Job, path: str, filename: str, status
 
     if not is_large_video(upload_path):
         stream_path = os.path.join(job.work_dir, f".stream_{uuid.uuid4().hex}.mp4")
+        if status:
+            await status.edit_text("📤 **Uploading...**\n\nOptimizing video for streaming...")
         ready = await make_streamable(upload_path, stream_path)
         if ready and os.path.isfile(ready) and os.path.getsize(ready) > 0:
             upload_path = ready
@@ -53,11 +62,21 @@ async def _send_video(client: Client, job: Job, path: str, filename: str, status
         raise RuntimeError("Video metadata could not be read after processing")
 
     thumb = await make_thumbnail(upload_path, job.work_dir)
+    reset_progress(job.job_id)
     progress = progress_for_pyrogram if status else None
     progress_args = ("Uploading", status, time.time(), job.job_id) if status else None
-    reset_progress(job.job_id)
 
-    kwargs = {"caption": None, "duration": max(1, int(round(duration))), "width": int(width), "height": int(height), "supports_streaming": True, "file_name": upload_name}
+    if status:
+        await status.edit_text("📤 **Uploading...**\n\nStarting Telegram upload...")
+
+    kwargs = {
+        "caption": None,
+        "duration": max(1, int(round(duration))),
+        "width": int(width),
+        "height": int(height),
+        "supports_streaming": True,
+        "file_name": upload_name,
+    }
     if thumb:
         kwargs["thumb"] = thumb
     if progress:
@@ -68,15 +87,20 @@ async def _send_video(client: Client, job: Job, path: str, filename: str, status
         return await client.send_video(job.user_id, upload_path, **kwargs)
     except Exception as first_error:
         try:
+            reset_progress(job.job_id)
+            if status:
+                await status.edit_text("📤 **Uploading...**\n\nVideo upload retrying as document...")
             document_kwargs = {"caption": None, "file_name": upload_name}
             if thumb:
                 document_kwargs["thumb"] = thumb
             if progress:
                 document_kwargs["progress"] = progress
-                document_kwargs["progress_args"] = progress_args
+                document_kwargs["progress_args"] = ("Uploading", status, time.time(), job.job_id)
             return await client.send_document(job.user_id, upload_path, **document_kwargs)
         except Exception as second_error:
-            raise RuntimeError(f"Video upload failed: {str(first_error)[:700]} | document fallback: {str(second_error)[:700]}") from second_error
+            raise RuntimeError(
+                f"Video upload failed: {str(first_error)[:700]} | document fallback: {str(second_error)[:700]}"
+            ) from second_error
 
 
 async def _send_plain_output(client: Client, job: Job, path: str, filename: str, status: Message | None = None):
@@ -84,15 +108,22 @@ async def _send_plain_output(client: Client, job: Job, path: str, filename: str,
     mime = job.mime_type or ""
     if not os.path.isfile(path) or os.path.getsize(path) <= 0:
         raise RuntimeError("Processed output is missing or empty")
-    if mime.startswith("video/") or ext in VIDEO_EXTENSIONS:
-        return await _send_video(client, job, path, filename, status)
-
+    reset_progress(job.job_id)
+    if status:
+        await protect_message(status.chat.id, status.id)
+        await status.edit_text("📤 **Uploading...**\n\nStarting Telegram upload...")
     progress = progress_for_pyrogram if status else None
     args = ("Uploading", status, time.time(), job.job_id) if status else None
+    if mime.startswith("video/") or ext in VIDEO_EXTENSIONS:
+        return await _send_video(client, job, path, filename, status)
     if mime.startswith("audio/") or ext in {"mp3", "m4a", "aac", "flac", "ogg", "wav", "opus"}:
         try:
             return await client.send_audio(job.user_id, path, caption=None, progress=progress, progress_args=args) if progress else await client.send_audio(job.user_id, path, caption=None)
         except RPCError:
+            reset_progress(job.job_id)
+            if status:
+                await status.edit_text("📤 **Uploading...**\n\nRetrying as document...")
+            args = ("Uploading", status, time.time(), job.job_id) if status else None
             return await client.send_document(job.user_id, path, caption=None, progress=progress, progress_args=args) if progress else await client.send_document(job.user_id, path, caption=None)
     return await client.send_document(job.user_id, path, caption=None, progress=progress, progress_args=args) if progress else await client.send_document(job.user_id, path, caption=None)
 
@@ -105,6 +136,7 @@ async def _deliver_output(client: Client, job: Job, path: str, filename: str, st
             total = len(parts)
             for index, part in enumerate(parts, 1):
                 if status:
+                    await protect_message(status.chat.id, status.id)
                     await status.edit_text(f"📤 **Uploading part {index}/{total}...**")
                 sent = await _send_video(client, job, part, os.path.basename(part), status)
                 if not sent:
@@ -152,8 +184,6 @@ async def repaired_file_download(client: Client, message: Message):
         await message.reply_text("⏳ **You already have an active file job.**\n\nPlease finish or cancel it first.")
         raise StopPropagation
 
-    # Keep the source file alive until this job has downloaded it. It can be
-    # cleaned automatically only after the processing cycle is finished.
     await protect_message(message.chat.id, message.id)
 
     text = ("📂 **File Detected**\n" "━━━━━━━━━━━━━━━━━━━━\n" f"📄 **Name**\n`{original_name}`\n" "━━━━━━━━━━━━━━━━━━━━\n" f"📦 **Size**\n`{humanbytes(expected_size)}`\n" "━━━━━━━━━━━━━━━━━━━━\n" f"🆔 **File ID**\n`{file_id}`\n\n" "Choose an operation before downloading:")
