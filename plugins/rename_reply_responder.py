@@ -11,8 +11,8 @@ from helper.database import db
 from helper.ffmpeg import convert_media
 from helper.job_state import jobs
 from helper.job_transfer import download_job
-from helper.message_cleanup import delete_user_job_messages, protect_message, protect_result
-from helper.utils import AniToonTransferCancelled, clear_transfer_cancel, humanbytes
+from helper.message_cleanup import delete_transfer_message, delete_user_job_messages, protect_message, protect_result
+from helper.utils import AniToonTransferCancelled, clear_transfer_cancel, humanbytes, progress_for_pyrogram, reset_progress
 from plugins.file_action_fix import _deliver_output
 from plugins.rename import _base_without_extension, _extension, _safe_filename
 
@@ -81,6 +81,18 @@ async def _processing_progress(status, job, current_bytes, total_bytes, start_ti
         pass
 
 
+async def _new_transfer_status(message, job, expected_size):
+    """Create a protected status and immediately render the real download bar."""
+    status = await message.reply_text(
+        "Preparing transfer...",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data=f"transfer:cancel:{job.job_id}")]]),
+    )
+    await protect_message(status.chat.id, status.id)
+    reset_progress(job.job_id)
+    await progress_for_pyrogram(0, expected_size, "Downloading", status, time.time(), job.job_id)
+    return status
+
+
 async def _cleanup_successful_user_input(client, message, job):
     """Delete only the user's source file and filename after a successful result."""
     ids = [job.source_message_id, getattr(message, "id", None)]
@@ -113,11 +125,8 @@ async def reliable_rename_reply(client, message):
         if _extension(name) != ext:
             name = f"{_base_without_extension(name)}.{ext}"
 
-        status = await message.reply_text(
-            "📥 **Downloading...**",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data=f"transfer:cancel:{job.job_id}")]]),
-        )
-        await protect_message(status.chat.id, status.id)
+        expected_size = int((job.extra or {}).get("telegram_file_size", 0) or 0)
+        status = await _new_transfer_status(message, job, expected_size)
         try:
             await _download_source(client, message, job, status)
             await status.edit_text("⚙️ **Processing...**")
@@ -127,8 +136,6 @@ async def reliable_rename_reply(client, message):
             input_size = max(1, os.path.getsize(job.input_path))
 
             async def processing_callback(_current_seconds, _total_seconds):
-                # FFmpeg reports time, not bytes. Read the growing output file so
-                # the progress MB shown to users is based on real processed data.
                 current_size = os.path.getsize(output_path) if os.path.isfile(output_path) else 0
                 await _processing_progress(status, job, current_size, input_size, processing_start)
 
@@ -137,8 +144,6 @@ async def reliable_rename_reply(client, message):
             final_size = os.path.getsize(output_path) if os.path.isfile(output_path) else input_size
             await _processing_progress(status, job, final_size, input_size, processing_start, force=True)
 
-            # Protect the transfer status BEFORE sending the result. Cleanup
-            # runs before send_video/send_document, so it must already be safe.
             await protect_message(status.chat.id, status.id)
             results = await _deliver_output(client, job, output_path, name, status)
             for result in results or []:
@@ -148,6 +153,7 @@ async def reliable_rename_reply(client, message):
             await status.edit_text(f"✅ **Conversion Complete!**\n\n📂 `{name}`\n📦 `{humanbytes(size)}`")
             await protect_result(status)
             await _cleanup_successful_user_input(client, message, job)
+            await delete_transfer_message(client, status)
         except AniToonTransferCancelled:
             await status.edit_text("❌ **Processing cancelled.**")
         except Exception as exc:
@@ -168,11 +174,8 @@ async def reliable_rename_reply(client, message):
             name = f"{_base_without_extension(name)}.{ext}"
 
         output_path = os.path.join(job.work_dir, name)
-        status = await message.reply_text(
-            "📥 **Downloading...**",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data=f"transfer:cancel:{job.job_id}")]]),
-        )
-        await protect_message(status.chat.id, status.id)
+        expected_size = int((job.extra or {}).get("telegram_file_size", 0) or 0)
+        status = await _new_transfer_status(message, job, expected_size)
         try:
             await _download_source(client, message, job, status)
             await status.edit_text("⚙️ **Processing...**")
@@ -189,6 +192,7 @@ async def reliable_rename_reply(client, message):
             await status.edit_text(f"✅ **Rename Complete!**\n\n📂 `{name}`\n📦 `{humanbytes(size)}`")
             await protect_result(status)
             await _cleanup_successful_user_input(client, message, job)
+            await delete_transfer_message(client, status)
         except AniToonTransferCancelled:
             await status.edit_text("❌ **Processing cancelled.**")
         except Exception as exc:
