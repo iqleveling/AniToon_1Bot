@@ -6,7 +6,7 @@ from pyrogram import Client, StopPropagation, filters
 
 from helper.database import db
 from helper.job_state import jobs
-from helper.message_cleanup import protect_start_page
+from helper.message_cleanup import protect_start_page, register_rename_start_prompt
 from helper.plans import get_plan
 from helper.utils import humanbytes
 from plugins.rename import _download_job
@@ -88,7 +88,10 @@ async def clean_start(client, message):
 @Client.on_callback_query(filters.regex(r"^start_rename$"), group=-200)
 async def start_rename_action(client, callback_query):
     await callback_query.answer()
-    await callback_query.message.reply_text("✏️ **Rename:**\nSend me the file you want to rename.")
+    sent = await callback_query.message.reply_text(
+        "✏️ **Rename:**\nSend me the file you want to rename."
+    )
+    await register_rename_start_prompt(callback_query.from_user.id, sent)
     raise StopPropagation
 
 
