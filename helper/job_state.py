@@ -33,14 +33,16 @@ class JobManager:
         self._semaphore = asyncio.Semaphore(self.max_active)
         self._jobs: dict[str, Job] = {}
         self._user_jobs: dict[int, list[str]] = {}
+        self._user_locks: dict[int, asyncio.Lock] = {}
         self._lock = asyncio.Lock()
 
     async def register(self, job: Job) -> bool:
-        """Register every submitted job; processing waits for a shared FIFO-style slot queue."""
+        """Register every submitted job so additional files can wait in queue."""
         async with self._lock:
             user_id = int(job.user_id)
             self._jobs[job.job_id] = job
             self._user_jobs.setdefault(user_id, []).append(job.job_id)
+            self._user_locks.setdefault(user_id, asyncio.Lock())
             return True
 
     async def get(self, job_id: str) -> Job | None:
@@ -84,25 +86,37 @@ class JobManager:
                 self._user_jobs[job.user_id] = queue
             else:
                 self._user_jobs.pop(job.user_id, None)
+                self._user_locks.pop(job.user_id, None)
 
     async def position(self, job_id: str) -> int:
-        """Return the FIFO position among jobs that have selected a processing action."""
+        """Return FIFO position among jobs that have selected an action."""
         async with self._lock:
             job = self._jobs.get(job_id)
             if not job:
                 return 0
             waiting = sorted(
-                (
-                    item
-                    for item in self._jobs.values()
-                    if item.active and item.selected_action
-                ),
+                (item for item in self._jobs.values() if item.active and item.selected_action),
                 key=lambda item: item.queued_at,
             )
             for index, item in enumerate(waiting, start=1):
                 if item.job_id == job_id:
                     return index
         return 0
+
+    async def user_queue_position(self, job_id: str) -> int:
+        async with self._lock:
+            job = self._jobs.get(job_id)
+            if not job:
+                return 0
+            ids = self._user_jobs.get(job.user_id, [])
+            try:
+                return ids.index(job_id) + 1
+            except ValueError:
+                return 0
+
+    async def user_lock(self, user_id: int) -> asyncio.Lock:
+        async with self._lock:
+            return self._user_locks.setdefault(int(user_id), asyncio.Lock())
 
     async def acquire(self):
         await self._semaphore.acquire()
