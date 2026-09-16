@@ -6,9 +6,8 @@ import types
 from collections import defaultdict
 from typing import Any
 
-# Auto-cleanup removes only ordinary temporary interaction messages.
-# Commands, /start messages, active/completed transfer status messages,
-# source files used by an active job, and successful result files are protected.
+# Automatic message deletion is intentionally disabled.
+# Messages remain in the chat unless another part of the bot explicitly deletes them.
 _last_user_messages: dict[int, set[int]] = defaultdict(set)
 _last_bot_temporary: dict[int, set[int]] = defaultdict(set)
 _protected: dict[int, set[int]] = defaultdict(set)
@@ -60,7 +59,6 @@ async def protect_message(chat_id: int, message_id: int | None):
 
 
 async def protect_transfer_message(message: Any):
-    """Permanently protect the transfer/status message from auto-cleanup."""
     if message is None:
         return
     chat = getattr(message, "chat", None)
@@ -73,14 +71,13 @@ async def protect_transfer_message(message: Any):
 
 
 async def delete_transfer_message(client, message: Any):
-    """Compatibility API: transfer messages are never auto-deleted."""
+    # Compatibility API only. Transfer messages are intentionally never deleted here.
     if message is None:
         return
     await protect_transfer_message(message)
 
 
 async def protect_result(message: Any):
-    """Successful output messages are permanent for the current process."""
     if message is None:
         return
     chat = getattr(message, "chat", None)
@@ -95,10 +92,12 @@ async def protect_start_page(message: Any):
 
 
 async def delete_user_job_messages(client, chat_id: int, message_ids):
-    """Explicitly remove only user job-input messages after success."""
+    """Compatibility API for callers that explicitly request job-input deletion."""
     ids = [int(x) for x in (message_ids or []) if x]
     if not ids:
         return
+    # Automatic cleanup is disabled, but this explicit helper preserves its
+    # historical behavior for code that intentionally invokes it.
     async with _state_lock:
         protected = _protected.get(int(chat_id), set())
         transfer = _transfer_messages.get(int(chat_id), set())
@@ -110,7 +109,7 @@ async def delete_user_job_messages(client, chat_id: int, message_ids):
 
 
 async def remember_user_message(message: Any, message_id: int | None = None):
-    """Track user messages, but never schedule commands for deletion."""
+    """Record message state without scheduling anything for automatic deletion."""
     if message_id is None:
         message_id = getattr(message, "id", None)
     chat_id = getattr(getattr(message, "chat", None), "id", None)
@@ -124,7 +123,6 @@ async def remember_user_message(message: Any, message_id: int | None = None):
 
 
 async def remember_bot_temporary(chat_id: int, result: Any):
-    """Track ordinary bot messages; commands/transfer statuses are protected."""
     results = result if isinstance(result, (list, tuple)) else [result]
     async with _state_lock:
         protected = _protected[int(chat_id)]
@@ -152,21 +150,8 @@ async def remember_cycle(user_id: int, *message_ids: int | None):
 
 
 async def _cleanup_before_new_bot_message(client, chat_id: int):
-    if not chat_id or chat_id < 0:
-        return
-    async with _state_lock:
-        protected = _protected.get(chat_id, set())
-        transfer = _transfer_messages.get(chat_id, set())
-        bot_ids = [
-            x for x in _last_bot_temporary.get(chat_id, set())
-            if x not in protected and x not in transfer
-        ]
-        user_ids = [x for x in _last_user_messages.get(chat_id, set()) if x not in protected]
-        _last_bot_temporary[chat_id].clear()
-        # Any user command that is protected must remain protected. Clear only
-        # ordinary user messages from the temporary queue.
-        _last_user_messages[chat_id].difference_update(user_ids)
-    await delete_messages(client, chat_id, bot_ids + user_ids)
+    # Intentionally disabled. Kept as a compatibility function for existing imports.
+    return None
 
 
 _AUTOCLEAN_METHODS = (
@@ -178,32 +163,6 @@ _AUTOCLEAN_METHODS = (
 
 
 def install_auto_cleanup(client):
-    """Delete only ordinary temporary messages; protected commands/status/results stay."""
-    if getattr(client, "_anitoon_auto_cleanup", False):
-        return
-
-    for method_name in _AUTOCLEAN_METHODS:
-        original = getattr(client, method_name, None)
-        if original is None:
-            continue
-
-        async def wrapped(self, *args, __original=original, **kwargs):
-            chat_id = kwargs.get("chat_id")
-            if chat_id is None and args:
-                chat_id = args[0]
-            try:
-                chat_id = int(chat_id)
-            except (TypeError, ValueError):
-                chat_id = None
-            if chat_id and chat_id > 0:
-                lock = _locks[chat_id]
-                async with lock:
-                    await _cleanup_before_new_bot_message(self, chat_id)
-                    result = await __original(*args, **kwargs)
-                    await remember_bot_temporary(chat_id, result)
-                    return result
-            return await __original(*args, **kwargs)
-
-        setattr(client, method_name, types.MethodType(wrapped, client))
-
-    client._anitoon_auto_cleanup = True
+    """Compatibility hook: automatic message deletion is completely disabled."""
+    client._anitoon_auto_cleanup = False
+    return None
