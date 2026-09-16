@@ -26,7 +26,7 @@ def cancel(job_id):
 async def cleanup(client, job, remove_source=False):
     clear_transfer_cancel(job.job_id)
     if remove_source:
-        for mid in (job.source_message_id, job.extra.get("prompt_message_id")):
+        for mid in (job.source_message_id, job.extra.get("prompt_message_id"), job.extra.get("rename_prompt_message_id"), job.extra.get("rename_menu_message_id")):
             if mid:
                 try:
                     await client.delete_messages(job.user_id, mid)
@@ -44,8 +44,6 @@ async def upload(client, job, path, name, status, kind):
         duration, width, height = await get_video_info(path)
         if duration <= 0 or width <= 0 or height <= 0:
             raise RuntimeError("FFmpeg produced an invalid video: duration or dimensions are missing")
-        # MP4 output from convert_media already has +faststart. Do not run a
-        # second remux here: that was delaying/failing the upload path.
         return await client.send_video(
             job.user_id,
             path,
@@ -114,6 +112,7 @@ async def rename_entry(client, cb):
     await cb.answer()
     await jobs.update(job.job_id, selected_action="rename_format")
     await cb.message.edit_text("✏️ **Rename**\n\nChoose output type:", reply_markup=rename_format_menu(job.job_id))
+    await jobs.update(job.job_id, extra={**job.extra, "rename_menu_message_id": cb.message.id})
     raise StopPropagation
 
 
@@ -124,9 +123,9 @@ async def rename_type(client, cb):
         await cb.answer("Job expired.", show_alert=True); raise StopPropagation
     mode = cb.matches[0].group(2)
     await cb.answer()
-    await jobs.update(job.job_id, selected_action="custom_name", extra={**job.extra, "rename_output_mode": mode})
+    await jobs.update(job.job_id, selected_action="custom_name", extra={**job.extra, "rename_output_mode": mode, "rename_menu_message_id": cb.message.id})
     prompt = await client.send_message(job.user_id, "✏️ **Enter new filename:**\n\n" + ("A real MP4 video will be created and sent as a Telegram video." if mode == "video" else "The result will be sent as a document."), reply_markup=cancel(job.job_id))
-    await jobs.update(job.job_id, extra={**job.extra, "rename_output_mode": mode, "prompt_message_id": prompt.id})
+    await jobs.update(job.job_id, extra={**job.extra, "rename_output_mode": mode, "prompt_message_id": prompt.id, "rename_menu_message_id": cb.message.id})
     raise StopPropagation
 
 
