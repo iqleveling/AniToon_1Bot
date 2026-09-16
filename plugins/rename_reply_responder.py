@@ -12,7 +12,6 @@ from helper.ffmpeg import convert_media
 from helper.job_state import jobs
 from helper.job_transfer import download_job
 from helper.message_cleanup import (
-    delete_transfer_message,
     delete_user_job_messages,
     protect_message,
     protect_result,
@@ -52,7 +51,6 @@ async def _download_source(client: Client, message, job, status):
 
 
 async def _processing_progress(status, job, current_bytes, total_bytes, start_time, force=False):
-    """Show processing progress every 3 seconds with a display-only 3x MB value."""
     if status is None:
         return
     now = time.time()
@@ -83,15 +81,12 @@ async def _processing_progress(status, job, current_bytes, total_bytes, start_ti
             f"⏱ ETA: `{eta_text}`"
         )
         job._last_processing_progress = now
-        # Processing edits do not go through the progress callback, so explicitly
-        # re-protect the same status message after every edit.
         await protect_transfer_message(status)
     except Exception:
         pass
 
 
 async def _new_transfer_status(message, job, expected_size):
-    """Create a protected status and immediately render the real download bar."""
     status = await message.reply_text(
         "Preparing transfer...",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data=f"transfer:cancel:{job.job_id}")]]),
@@ -104,7 +99,6 @@ async def _new_transfer_status(message, job, expected_size):
 
 
 async def _cleanup_successful_user_input(client, message, job):
-    """Delete only the user's source file and filename after a successful result."""
     ids = [job.source_message_id, getattr(message, "id", None)]
     await delete_user_job_messages(client, message.chat.id, ids)
 
@@ -162,16 +156,16 @@ async def reliable_rename_reply(client, message):
             size = os.path.getsize(output_path)
             await db.update_usage(job.user_id, job.bot_id, size)
 
-            # Only after the result message(s) have been successfully sent and
-            # protected do we replace/delete the transfer progress message.
             await status.edit_text(f"✅ **Conversion Complete!**\n\n📂 `{name}`\n📦 `{humanbytes(size)}`")
+            await protect_transfer_message(status)
             await protect_result(status)
             await _cleanup_successful_user_input(client, message, job)
-            await delete_transfer_message(client, status)
         except AniToonTransferCancelled:
             await status.edit_text("❌ **Processing cancelled.**")
+            await protect_transfer_message(status)
         except Exception as exc:
             await status.edit_text(f"❌ **Conversion failed**\n\n`{str(exc)[:1000]}`")
+            await protect_transfer_message(status)
         finally:
             clear_transfer_cancel(job.job_id)
             shutil.rmtree(job.work_dir, ignore_errors=True)
@@ -205,16 +199,16 @@ async def reliable_rename_reply(client, message):
             size = os.path.getsize(output_path)
             await db.update_usage(job.user_id, job.bot_id, size)
 
-            # Keep the progress/status message alive through the complete upload.
-            # It is removed only now, after successful result delivery.
             await status.edit_text(f"✅ **Rename Complete!**\n\n📂 `{name}`\n📦 `{humanbytes(size)}`")
+            await protect_transfer_message(status)
             await protect_result(status)
             await _cleanup_successful_user_input(client, message, job)
-            await delete_transfer_message(client, status)
         except AniToonTransferCancelled:
             await status.edit_text("❌ **Processing cancelled.**")
+            await protect_transfer_message(status)
         except Exception as exc:
             await status.edit_text(f"❌ **Processing failed**\n\n`{str(exc)[:1000]}`")
+            await protect_transfer_message(status)
         finally:
             clear_transfer_cancel(job.job_id)
             shutil.rmtree(job.work_dir, ignore_errors=True)
