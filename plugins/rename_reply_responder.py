@@ -86,10 +86,23 @@ async def _processing_progress(status, job, current_bytes, total_bytes, start_ti
         pass
 
 
+def _initial_download_text(expected_size: int) -> str:
+    total = max(0, int(expected_size or 0))
+    return (
+        "📥 **Download Progress**\n"
+        "░" * 24 + " 0.00%\n\n"
+        f"📦 Size: `0 B` / `{humanbytes(total)}`\n"
+        "🚀 Speed: `0 B/s`\n"
+        "⏱ ETA: calculating..."
+    )
+
+
 async def _new_transfer_status(message, job, expected_size):
     status = await message.reply_text(
-        "Preparing transfer...",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data=f"transfer:cancel:{job.job_id}")]]),
+        _initial_download_text(expected_size),
+        reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton("❌ Cancel", callback_data=f"transfer:cancel:{job.job_id}")]]
+        ),
     )
     await protect_transfer_message(status)
     reset_progress(job.job_id)
