@@ -103,10 +103,20 @@ async def _cleanup_successful_user_input(client, message, job):
 
 
 async def _finish_delivery(client, message, job, status, name, size, success_text):
-    await status.edit_text(success_text)
-    await protect_transfer_message(status)
+    """Remove only the transfer/progress message after a successful delivery.
+
+    The uploaded result is never deleted here. Progress stays visible during the
+    entire upload, including 100%, and disappears only after Telegram has
+    returned the uploaded result successfully.
+    """
     await protect_result(status)
     await _cleanup_successful_user_input(client, message, job)
+    try:
+        await client.delete_messages(status.chat.id, status.id)
+    except Exception:
+        # If deletion is temporarily unavailable, leave the completed status in
+        # place rather than risking deletion of any uploaded result.
+        pass
 
 
 @Client.on_message(filters.private & filters.text, group=-1200)
@@ -140,9 +150,9 @@ async def reliable_rename_reply(client, message):
         try:
             await _download_source(client, message, job, status)
 
-            # Do not show a separate Processing message. Keep the download
-            # progress message visible while the output is prepared. The first
-            # upload callback changes this same message directly to Upload Progress.
+            # Keep the Download Progress message visible during local preparation.
+            # The upload callback replaces this exact message with Upload Progress
+            # when Telegram upload actually begins.
             job._last_processing_progress = 0.0
             processing_start = time.time()
             output_path = os.path.join(job.work_dir, name)
@@ -155,9 +165,6 @@ async def reliable_rename_reply(client, message):
             if not await convert_media(job.input_path, output_path, ext, progress_callback=processing_callback):
                 raise RuntimeError("FFmpeg conversion failed")
 
-            # Keep the final Download Progress 100% visible until _deliver_output
-            # actually invokes Telegram send_*; its upload callback then replaces
-            # this message with the full Upload Progress UI.
             final_size = os.path.getsize(output_path) if os.path.isfile(output_path) else input_size
             await _processing_progress(status, job, final_size, input_size, processing_start, force=True)
             await protect_transfer_message(status)
@@ -198,7 +205,7 @@ async def reliable_rename_reply(client, message):
             await _download_source(client, message, job, status)
 
             # Keep Download Progress visible while the local file is prepared;
-            # do not display the separate Processing message.
+            # do not display a separate Processing message.
             os.replace(job.input_path, output_path)
             if job.extra.get("rename_output_mode") == "video":
                 job.mime_type = "video/mp4"
