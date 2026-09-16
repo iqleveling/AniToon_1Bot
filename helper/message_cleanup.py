@@ -15,9 +15,6 @@ _transfer_messages: dict[int, set[int]] = defaultdict(set)
 _locks: defaultdict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
 _state_lock = asyncio.Lock()
 
-# Per-job flow messages. "transient" messages are safe to remove when the next
-# response arrives. The source file is tracked separately and is removed only
-# after the file has been downloaded and no longer needs Telegram's message.
 _job_transient: dict[str, set[tuple[int, int]]] = defaultdict(set)
 _job_source: dict[str, set[tuple[int, int]]] = defaultdict(set)
 _rename_start_prompts: dict[int, set[tuple[int, int]]] = defaultdict(set)
@@ -43,8 +40,7 @@ def _looks_like_transfer_status(message: Any) -> bool:
 
 
 async def delete_messages(client, chat_id, message_ids=None):
-    # Delete individually on purpose: this is a scoped cleanup feature, not a
-    # bulk-history deletion tool.
+    # Delete individually so only explicitly selected messages are touched.
     for message_id in [int(x) for x in (message_ids or []) if x]:
         try:
             await client.delete_messages(chat_id, message_id)
@@ -74,8 +70,6 @@ async def protect_transfer_message(message: Any):
 
 
 async def delete_transfer_message(client, message: Any):
-    # Compatibility API: transfer messages stay visible until the transfer
-    # pipeline itself decides the job has succeeded.
     if message is None:
         return
     await protect_transfer_message(message)
@@ -132,15 +126,12 @@ async def cleanup_job_transient(client, job_id: str, *, keep_message_id: int | N
     async with _state_lock:
         items = list(_job_transient.pop(str(job_id), set()))
     keep = int(keep_message_id) if keep_message_id else None
-    remaining = []
     for chat_id, message_id in items:
         if keep is not None and message_id == keep:
-            remaining.append((chat_id, message_id))
+            async with _state_lock:
+                _job_transient[str(job_id)].add((chat_id, message_id))
             continue
         await delete_messages(client, chat_id, [message_id])
-    if remaining:
-        async with _state_lock:
-            _job_transient[str(job_id)].update(remaining)
 
 
 async def cleanup_job_source(client, job_id: str) -> None:
@@ -161,26 +152,43 @@ async def clear_job_cleanup(job_id: str) -> None:
 
 
 async def prepare_incoming_message_cleanup(client, message: Any) -> None:
-    """Delete only the current user's active rename-flow prompts before processing the new reply."""
+    """Delete only temporary messages belonging to the user's active rename flow."""
     if message is None or not getattr(message, "from_user", None):
         return
     user_id = int(message.from_user.id)
-    # A /command is never treated as a rename-flow answer.
     if _is_command(message):
         return
+
+    # The start-page rename prompt is a separate pre-job message.
+    await cleanup_rename_start_prompt(client, user_id)
+
     try:
         from helper.job_state import jobs
         job = await jobs.get_user_job(user_id)
     except Exception:
         job = None
-    if job and getattr(job, "selected_action", None) in {
+
+    if not job or getattr(job, "selected_action", None) not in {
         "rename_output_choice", "rename_format", "custom_name", "convert_name"
     }:
-        await cleanup_job_transient(client, job.job_id)
+        return
+
+    # Different historical rename handlers use one of these fields. Delete only
+    # those exact message IDs; never search or scan the chat.
+    extra = getattr(job, "extra", {}) or {}
+    ids = {
+        extra.get("rename_prompt_message_id"),
+        extra.get("prompt_message_id"),
+        extra.get("rename_menu_message_id"),
+    }
+    ids.discard(None)
+    for message_id in ids:
+        await delete_messages(client, message.chat.id, [message_id])
+
+    await cleanup_job_transient(client, job.job_id)
 
 
 async def delete_user_job_messages(client, chat_id: int, message_ids):
-    """Compatibility API for callers that explicitly request job-input deletion."""
     ids = [int(x) for x in (message_ids or []) if x]
     if not ids:
         return
@@ -188,7 +196,6 @@ async def delete_user_job_messages(client, chat_id: int, message_ids):
 
 
 async def remember_user_message(message: Any, message_id: int | None = None):
-    """Record state only; automatic deletion is handled exclusively by the scoped job registry."""
     if message_id is None:
         message_id = getattr(message, "id", None)
     chat_id = getattr(getattr(message, "chat", None), "id", None)
@@ -202,7 +209,7 @@ async def remember_user_message(message: Any, message_id: int | None = None):
 
 
 async def remember_bot_temporary(chat_id: int, result: Any):
-    # Compatibility only. Do not classify arbitrary bot messages as deletable.
+    # Compatibility only. Never classify arbitrary bot messages as deletable.
     return None
 
 
@@ -215,7 +222,7 @@ async def remember_cycle(user_id: int, *message_ids: int | None):
 
 
 async def _cleanup_before_new_bot_message(client, chat_id: int):
-    # Intentionally disabled globally. Flow cleanup is job-scoped instead.
+    # Global bot-message cleanup is intentionally disabled.
     return None
 
 
@@ -228,6 +235,5 @@ _AUTOCLEAN_METHODS = (
 
 
 def install_auto_cleanup(client):
-    """Enable only the scoped flow-cleanup bootstrap; never patch Telegram send methods."""
     client._anitoon_auto_cleanup = True
     return None
