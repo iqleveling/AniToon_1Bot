@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import os
+import shutil
 import time
 
 from pyrogram import Client
@@ -77,6 +79,11 @@ async def download_job(client: Client, message: Message, job: Job, status: Messa
         return actual
     except AniToonTransferCancelled:
         try: await status.edit_text("❌ **Processing cancelled.**")
+        except Exception: pass
+        raise
+    except asyncio.CancelledError:
+        await jobs.remove(job.job_id)
+        try: shutil.rmtree(job.work_dir, ignore_errors=True)
         except Exception: pass
         raise
     except FloodWait:
