@@ -8,6 +8,7 @@ from pyrogram.errors import FloodWait
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from helper.job_state import Job, jobs
+from helper.message_cleanup import protect_transfer_message
 from helper.utils import AniToonTransferCancelled, humanbytes, progress_for_pyrogram, reset_progress
 
 
@@ -17,10 +18,27 @@ def cancel_markup(job_id: str):
     )
 
 
+async def _show_processing(status: Message | None):
+    if status is None:
+        return
+    try:
+        await status.edit_text(
+            "⚙️ **Processing...**\n"
+            "Please wait while the video/file is prepared for upload."
+        )
+        await protect_transfer_message(status)
+    except Exception:
+        # A progress callback can be editing the same Telegram message at the
+        # same time. The next processing/upload update will replace it.
+        pass
+
+
 async def download_job(client: Client, message: Message, job: Job, status: Message) -> int:
-    """Download a deferred job and always expose the complete transfer progress."""
+    """Download a deferred job and transition reliably to processing."""
     if os.path.isfile(job.input_path):
-        return os.path.getsize(job.input_path)
+        actual = os.path.getsize(job.input_path)
+        await _show_processing(status)
+        return actual
 
     expected_size = int(job.extra.get("telegram_file_size", 0) or 0)
     source = job.extra.get("source_message") or job.extra.get("file_id") or message
@@ -48,13 +66,16 @@ async def download_job(client: Client, message: Message, job: Job, status: Messa
             os.replace(path, job.input_path)
         if not os.path.isfile(job.input_path):
             raise RuntimeError("Telegram download completed but the local file was not found")
+
         actual = os.path.getsize(job.input_path)
         if expected_size and actual != expected_size:
             raise RuntimeError(
                 f"Incomplete download: expected {humanbytes(expected_size)}, got {humanbytes(actual)}"
             )
 
-        # Force the final 100% Downloading state before moving to Processing.
+        # One final, real 100% download update. Immediately after that, replace
+        # the download UI with Processing so the job can never remain visually
+        # stuck at "Download Progress 100%".
         await progress_for_pyrogram(
             actual,
             expected_size or actual,
@@ -64,6 +85,7 @@ async def download_job(client: Client, message: Message, job: Job, status: Messa
             job.job_id,
         )
         await jobs.update(job.job_id, extra={**job.extra, "downloaded_size": actual})
+        await _show_processing(status)
         return actual
     except AniToonTransferCancelled:
         try:
