@@ -5,6 +5,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from config import Config
+
 
 @dataclass
 class Job:
@@ -34,9 +36,14 @@ class JobManager:
         self._lock = asyncio.Lock()
 
     async def register(self, job: Job) -> bool:
+        """Register one job per user; transfers wait on the shared semaphore."""
         async with self._lock:
+            user_id = int(job.user_id)
+            existing = self._user_jobs.get(user_id, [])
+            if any(job_id in self._jobs for job_id in existing):
+                return False
             self._jobs[job.job_id] = job
-            self._user_jobs.setdefault(job.user_id, []).append(job.job_id)
+            self._user_jobs.setdefault(user_id, []).append(job.job_id)
             return True
 
     async def get(self, job_id: str) -> Job | None:
@@ -99,4 +106,4 @@ class JobManager:
         self._semaphore.release()
 
 
-jobs = JobManager(max_active=20)
+jobs = JobManager(max_active=Config.MAX_ACTIVE_JOBS)
