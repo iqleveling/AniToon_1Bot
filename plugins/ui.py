@@ -9,8 +9,15 @@ def force_sub_menu():
 
 
 def main_menu(is_main_bot: bool = True, is_owner: bool = False):
-    """Minimal home screen: Rename is the primary entry point."""
-    return InlineKeyboardMarkup([[InlineKeyboardButton("✏️ Rename", callback_data="start_rename")]])
+    """Home screen matching the requested layout."""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🛠 Help", callback_data="help"),
+            InlineKeyboardButton("⚙️ Settings", callback_data="settings"),
+        ],
+        [InlineKeyboardButton("✏️ Rename", callback_data="start_rename")],
+        [InlineKeyboardButton("🤖 Create Your Own Clone Bot", callback_data="create_clone")],
+    ])
 
 
 def settings_menu():
