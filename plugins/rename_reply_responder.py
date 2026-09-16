@@ -5,6 +5,7 @@ import shutil
 import time
 
 from pyrogram import Client, StopPropagation, filters
+from pyrogram.errors import FloodWait
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from helper.database import db
@@ -50,6 +51,15 @@ def _initial_download_text(expected_size: int) -> str:
     )
 
 
+async def _delete_message_safely(client, chat_id, message_id):
+    if not message_id:
+        return
+    try:
+        await client.delete_messages(chat_id, int(message_id))
+    except Exception:
+        pass
+
+
 async def _new_transfer_status(message, job, expected_size):
     status = await message.reply_text(
         _initial_download_text(expected_size),
@@ -59,41 +69,51 @@ async def _new_transfer_status(message, job, expected_size):
     reset_progress(job.job_id)
     await progress_for_pyrogram(0, expected_size, "Downloading", status, time.time(), job.job_id)
     await protect_transfer_message(status)
+
+    # The user's filename is a one-step flow message. Once the next bot response
+    # exists, remove that exact message immediately; never delete other messages.
+    await _delete_message_safely(client=message._client, chat_id=message.chat.id, message_id=message.id)
     return status
 
 
-async def _delete_message_safely(client, chat_id: int, message_id: int | None):
-    if not message_id:
+async def _conversion_progress(current: float, total: float, status, job_id: str, label: str):
+    if not total or status is None:
         return
+    percent = max(0.0, min(99.9, (float(current) * 100.0) / float(total)))
     try:
-        await client.delete_messages(chat_id, message_id)
+        await status.edit_text(
+            "⚙️ **Converting**\n"
+            + ("█" * max(0, min(24, int(percent / 100 * 24))))
+            + ("░" * max(0, 24 - int(percent / 100 * 24)))
+            + f" {percent:.1f}%\n\n"
+            f"📂 `{label}`",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data=f"transfer:cancel:{job_id}")]]),
+        )
     except Exception:
         pass
 
 
-async def _delete_rename_prompt(client, message, job):
-    prompt_id = (job.extra or {}).get("rename_prompt_message_id")
-    await _delete_message_safely(client, message.chat.id, prompt_id)
-    # The new filename message is intentionally removed after it has been used.
-    await _delete_message_safely(client, message.chat.id, getattr(message, "id", None))
+async def _convert_with_progress(job, status, output_path, output_format, label):
+    async def report(current, total):
+        await _conversion_progress(current, total, status, job.job_id, label)
+
+    return await convert_media(job.input_path, output_path, output_format, report)
 
 
 async def _finish_delivery(client, message, job, status):
     await protect_result(status)
-    # Only the transfer status is removed automatically on success. The source
-    # file/result are never touched here; the filename reply is removed separately.
-    await _delete_rename_prompt(client, message, job)
+    await _delete_message_safely(client, message.chat.id, (job.extra or {}).get("rename_prompt_message_id"))
     await _delete_message_safely(client, status.chat.id, status.id)
 
 
-async def _convert_rename_to_video(job, name: str):
-    """When Rename -> Video is selected, really create MP4 if the source is not MP4."""
+async def _convert_rename_to_video(job, name: str, status):
+    """Create a real MP4 only when the source is not already MP4."""
     if job.extra.get("rename_output_mode") != "video":
         return os.path.join(job.work_dir, name)
     if _extension(job.original_name) == "mp4":
         return os.path.join(job.work_dir, name)
     output_path = os.path.join(job.work_dir, f".rename_video_{job.job_id}.mp4")
-    if not await convert_media(job.input_path, output_path, "mp4"):
+    if not await _convert_with_progress(job, status, output_path, "mp4", name):
         raise RuntimeError("Could not convert the renamed source into MP4 video")
     return output_path
 
@@ -129,9 +149,8 @@ async def reliable_rename_reply(client, message):
         try:
             await _download_source(client, message, job, status)
             output_path = os.path.join(job.work_dir, name)
-            input_size = max(1, os.path.getsize(job.input_path))
 
-            if not await convert_media(job.input_path, output_path, ext):
+            if not await _convert_with_progress(job, status, output_path, ext, name):
                 raise RuntimeError("FFmpeg conversion failed")
 
             results = await _deliver_output(client, job, output_path, name, status)
@@ -167,10 +186,8 @@ async def reliable_rename_reply(client, message):
         try:
             await _download_source(client, message, job, status)
 
-            # A Rename -> Video request must produce a real MP4, not merely rename
-            # a non-MP4 source with an .mp4 suffix.
             if job.extra.get("rename_output_mode") == "video":
-                video_path = await _convert_rename_to_video(job, name)
+                video_path = await _convert_rename_to_video(job, name, status)
                 if video_path != os.path.join(job.work_dir, name):
                     name = f"{_base_without_extension(name)}.mp4"
                     output_path = os.path.join(job.work_dir, name)
