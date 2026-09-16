@@ -11,7 +11,7 @@ from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from helper.archive_result import archive_message
 from helper.database import db
-from helper.ffmpeg import convert_media, get_video_info, make_streamable
+from helper.ffmpeg import convert_media, get_video_info
 from helper.job_state import Job, jobs
 from helper.large_file import split_file_for_telegram
 from helper.large_video import is_large_video, make_thumbnail, split_video_for_telegram
@@ -32,6 +32,12 @@ def _video_upload_name(filename: str) -> str:
 
 
 async def _prepare_video(client: Client, job: Job, path: str, filename: str, status: Message | None = None):
+    """Prepare only what is required, then let Telegram upload immediately.
+
+    MP4 conversion already uses +faststart in helper.ffmpeg.convert_media. For an
+    existing MP4 rename there is no reason to remux the whole file again before
+    upload, which was causing a long pause after Download Progress reached 100%.
+    """
     upload_path = path
     upload_name = _video_upload_name(filename)
 
@@ -45,12 +51,9 @@ async def _prepare_video(client: Client, job: Job, path: str, filename: str, sta
             raise RuntimeError("Could not create a Telegram-compatible MP4 video")
         upload_path = mp4_path
 
-    if not is_large_video(upload_path):
-        stream_path = os.path.join(job.work_dir, f".stream_{uuid.uuid4().hex}.mp4")
-        ready = await make_streamable(upload_path, stream_path)
-        if ready and os.path.isfile(ready) and os.path.getsize(ready) > 0:
-            upload_path = ready
-
+    # Do not run a second full-file FFmpeg remux here. If conversion to MP4 was
+    # required, convert_media already generated a +faststart MP4. If the source
+    # is already MP4, upload it directly.
     duration, width, height = await get_video_info(upload_path)
     if not duration or not width or not height:
         raise RuntimeError("Video metadata could not be read after processing")
@@ -223,6 +226,10 @@ async def rename_format_fix(client, cb):
     await cb.answer()
     await jobs.update(job.job_id, extra={**job.extra, "rename_output_mode": mode})
     job.mime_type = "video/mp4" if mode == "video" else "application/octet-stream"
+    try:
+        await cb.message.delete()
+    except Exception:
+        pass
     await _ask_name(client, job.user_id, "Enter new filename:", job.job_id, "custom_name")
     raise StopPropagation
 
@@ -237,6 +244,10 @@ async def convert_entry_fix(client, cb):
     await cb.answer()
     job.output_ext = fmt
     job.mime_type = VIDEO_MIME.get(fmt) or AUDIO_MIME.get(fmt) or "application/octet-stream"
+    try:
+        await cb.message.delete()
+    except Exception:
+        pass
     await _ask_name(client, job.user_id, f"Enter new filename for {fmt.upper()}:\nThe `.{fmt}` extension will be used.", job.job_id, "convert_name")
     raise StopPropagation
 
