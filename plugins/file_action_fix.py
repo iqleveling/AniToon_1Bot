@@ -17,9 +17,9 @@ from helper.large_file import split_file_for_telegram
 from helper.large_video import is_large_video, split_video_for_telegram
 from helper.message_cleanup import protect_message, protect_result
 from helper.plans import get_plan
-from helper.utils import humanbytes
+from helper.utils import humanbytes, progress_for_pyrogram, reset_progress
 from plugins.rename import _ask_name, _base_without_extension, _extension, _media_from_message, _safe_filename, _user_context
-from plugins.ui import file_action_menu
+from plugins.ui import file_action_menu, rename_output_menu
 
 VIDEO_MIME = {"mp4": "video/mp4", "mkv": "video/x-matroska", "webm": "video/webm", "mov": "video/quicktime"}
 AUDIO_MIME = {"mp3": "audio/mpeg", "m4a": "audio/mp4"}
@@ -32,10 +32,8 @@ def _video_upload_name(filename: str) -> str:
 
 
 async def _prepare_video(job: Job, path: str, filename: str):
-    """Prepare a video exactly once before Telegram upload."""
+    """Prepare a video once; reuse already-compatible MP4 files directly."""
     upload_name = _video_upload_name(filename)
-    # A previous conversion already produced MP4. Never probe/remux/re-encode it
-    # a second time: go straight to Telegram after one metadata read.
     if path.lower().endswith(".mp4") and _extension(filename) == "mp4":
         upload_path = path
     else:
@@ -43,7 +41,6 @@ async def _prepare_video(job: Job, path: str, filename: str):
         upload_path = await prepare_video_for_telegram(path, mp4_path)
         if not upload_path:
             raise RuntimeError("Could not prepare a valid Telegram video")
-
     duration, width, height = await get_video_info(upload_path)
     if duration <= 0 or width <= 0 or height <= 0:
         raise RuntimeError("Video metadata could not be read")
@@ -54,7 +51,6 @@ async def _show_upload_start(job: Job, status: Message | None, path: str):
     if status is None:
         return
     total = max(1, os.path.getsize(path))
-    from helper.utils import reset_progress, progress_for_pyrogram
     reset_progress(job.job_id)
     await protect_message(status.chat.id, status.id)
     await progress_for_pyrogram(0, total, "Uploading", status, time.time(), job.job_id)
@@ -62,7 +58,6 @@ async def _show_upload_start(job: Job, status: Message | None, path: str):
 
 async def _send_video(client: Client, job: Job, path: str, filename: str, status: Message | None = None):
     upload_path, upload_name, duration, width, height = await _prepare_video(job, path, filename)
-    from helper.utils import progress_for_pyrogram, reset_progress
     await _show_upload_start(job, status, upload_path)
     progress = progress_for_pyrogram if status else None
     args = ("Uploading", status, time.time(), job.job_id) if status else None
@@ -83,6 +78,8 @@ async def _send_video(client: Client, job: Job, path: str, filename: str, status
     try:
         return await client.send_video(job.user_id, upload_path, **kwargs)
     except RPCError as exc:
+        # Some Telegram errors are caused only by the thumbnail; retry the same
+        # upload without the optional thumb. Never re-encode/remux the video.
         if saved_thumb:
             kwargs.pop("thumb", None)
             reset_progress(job.job_id)
@@ -96,8 +93,6 @@ async def _send_plain_output(client: Client, job: Job, path: str, filename: str,
     mime = job.mime_type or ""
     if not os.path.isfile(path) or os.path.getsize(path) <= 0:
         raise RuntimeError("Processed output is missing or empty")
-
-    from helper.utils import progress_for_pyrogram
     progress = progress_for_pyrogram if status else None
     args = ("Uploading", status, time.time(), job.job_id) if status else None
     if mime.startswith("video/") or ext in VIDEO_EXTENSIONS:
@@ -193,13 +188,28 @@ async def rename_entry_fix(client, cb):
         await cb.answer("Job expired or not owned by you.", show_alert=True)
         raise StopPropagation
     await cb.answer()
+    await jobs.update(job.job_id, selected_action="rename_output_choice", extra={**job.extra, "rename_menu_message_id": cb.message.id})
     try:
-        await cb.message.delete()
+        await cb.message.edit_text(
+            "✏️ **Rename**\n\nChoose how you want the renamed file to be sent:",
+            reply_markup=rename_output_menu(job.job_id),
+        )
     except Exception:
         pass
-    await jobs.update(job.job_id, selected_action="custom_name")
+    raise StopPropagation
+
+
+@Client.on_callback_query(filters.regex(r"^renameoutput:([0-9a-f]+):(file|video)$"), group=-1000)
+async def rename_output_fix(client, cb):
+    job = await jobs.get(cb.matches[0].group(1))
+    if not job or job.user_id != cb.from_user.id:
+        await cb.answer("Job expired or not owned by you.", show_alert=True)
+        raise StopPropagation
+    mode = cb.matches[0].group(2)
+    await cb.answer()
+    await jobs.update(job.job_id, selected_action="custom_name", extra={**job.extra, "rename_output_mode": mode, "rename_menu_message_id": cb.message.id})
     prompt = await _ask_name(client, job.user_id, "✏️ **Rename:**\nSend me the new filename.", job.job_id, "custom_name")
-    await jobs.update(job.job_id, extra={**job.extra, "rename_prompt_message_id": prompt.id, "prompt_message_id": prompt.id})
+    await jobs.update(job.job_id, extra={**job.extra, "rename_prompt_message_id": prompt.id, "prompt_message_id": prompt.id, "rename_menu_message_id": cb.message.id})
     raise StopPropagation
 
 
@@ -212,12 +222,13 @@ async def rename_format_fix(client, cb):
     mode = cb.matches[0].group(2)
     await cb.answer()
     await jobs.update(job.job_id, extra={**job.extra, "rename_output_mode": mode, "rename_menu_message_id": cb.message.id})
+    job.mime_type = "video/mp4" if mode == "video" else "application/octet-stream"
     try:
         await cb.message.delete()
     except Exception:
         pass
     prompt = await _ask_name(client, job.user_id, "✏️ **Rename:**\nSend me the new filename.", job.job_id, "custom_name")
-    await jobs.update(job.job_id, extra={**job.extra, "rename_output_mode": mode, "rename_prompt_message_id": prompt.id, "prompt_message_id": prompt.id})
+    await jobs.update(job.job_id, extra={**job.extra, "rename_prompt_message_id": prompt.id, "prompt_message_id": prompt.id})
     raise StopPropagation
 
 
@@ -248,7 +259,7 @@ async def rename_reply_guard(client, message: Message):
 
 
 @Client.on_message(filters.private & (filters.document | filters.video | filters.audio), group=-999)
-async def retry_file_when_waiting(client: Client, message: Message):
+async def retry_file_when_waiting(client: Client, message: Client):
     job = await jobs.get_user_job(message.from_user.id)
     if not job or job.selected_action not in WAITING_ACTIONS:
         return
