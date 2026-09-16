@@ -19,25 +19,21 @@ def cancel_markup(job_id: str):
 
 
 async def _show_processing(status: Message | None):
+    """Deprecated visual state: intentionally do not show a Processing message.
+
+    The download progress message remains visible while FFmpeg/preparation runs.
+    The upload progress callback replaces it as soon as Telegram upload begins.
+    """
     if status is None:
         return
-    try:
-        await status.edit_text(
-            "⚙️ **Processing...**\n"
-            "Please wait while the video/file is prepared for upload."
-        )
-        await protect_transfer_message(status)
-    except Exception:
-        # A progress callback can be editing the same Telegram message at the
-        # same time. The next processing/upload update will replace it.
-        pass
+    await protect_transfer_message(status)
 
 
 async def download_job(client: Client, message: Message, job: Job, status: Message) -> int:
-    """Download a deferred job and transition reliably to processing."""
+    """Download a deferred job without replacing the progress UI with Processing."""
     if os.path.isfile(job.input_path):
         actual = os.path.getsize(job.input_path)
-        await _show_processing(status)
+        await protect_transfer_message(status)
         return actual
 
     expected_size = int(job.extra.get("telegram_file_size", 0) or 0)
@@ -73,9 +69,10 @@ async def download_job(client: Client, message: Message, job: Job, status: Messa
                 f"Incomplete download: expected {humanbytes(expected_size)}, got {humanbytes(actual)}"
             )
 
-        # One final, real 100% download update. Immediately after that, replace
-        # the download UI with Processing so the job can never remain visually
-        # stuck at "Download Progress 100%".
+        # Keep the same Download Progress message at 100% while any conversion,
+        # remuxing, thumbnail preparation, or other local processing happens.
+        # _deliver_output will switch this exact message to Upload Progress when
+        # client.send_* actually starts uploading the prepared result.
         await progress_for_pyrogram(
             actual,
             expected_size or actual,
@@ -85,7 +82,7 @@ async def download_job(client: Client, message: Message, job: Job, status: Messa
             job.job_id,
         )
         await jobs.update(job.job_id, extra={**job.extra, "downloaded_size": actual})
-        await _show_processing(status)
+        await protect_transfer_message(status)
         return actual
     except AniToonTransferCancelled:
         try:
