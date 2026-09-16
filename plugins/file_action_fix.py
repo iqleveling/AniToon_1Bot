@@ -13,6 +13,7 @@ from helper.archive_result import archive_message
 from helper.database import db
 from helper.ffmpeg import convert_media, get_video_info, make_streamable
 from helper.job_state import Job, jobs
+from helper.large_file import split_file_for_telegram
 from helper.large_video import is_large_video, make_thumbnail, split_video_for_telegram
 from helper.message_cleanup import protect_message, protect_result, delete_transfer_message
 from helper.plans import get_plan
@@ -27,12 +28,10 @@ VIDEO_EXTENSIONS = {"mp4", "mkv", "webm", "mov", "avi", "flv", "ts", "m4v"}
 
 
 def _video_upload_name(filename: str) -> str:
-    """Telegram video messages should have an MP4 filename for streamable delivery."""
     return f"{_base_without_extension(filename)}.mp4"
 
 
 async def _prepare_video(client: Client, job: Job, path: str, filename: str, status: Message | None = None):
-    """Normalize video to streamable MP4 without hiding the real upload progress."""
     upload_path = path
     upload_name = _video_upload_name(filename)
 
@@ -40,16 +39,12 @@ async def _prepare_video(client: Client, job: Job, path: str, filename: str, sta
         await protect_message(status.chat.id, status.id)
         reset_progress(job.job_id)
 
-    # Telegram video messages are sent as MPEG-4. Convert non-MP4 inputs first.
     if _extension(filename) != "mp4":
         mp4_path = os.path.join(job.work_dir, f".upload_{uuid.uuid4().hex}.mp4")
         if not await convert_media(path, mp4_path, "mp4"):
             raise RuntimeError("Could not create a Telegram-compatible MP4 video")
         upload_path = mp4_path
 
-    # Make the MP4 seekable/streamable with the MOOV atom at the front.
-    # Do not do this for huge split parts unnecessarily; they are already prepared
-    # by the splitter and keeping the part intact makes the 100% upload terminal state reliable.
     if not is_large_video(upload_path):
         stream_path = os.path.join(job.work_dir, f".stream_{uuid.uuid4().hex}.mp4")
         ready = await make_streamable(upload_path, stream_path)
@@ -84,8 +79,7 @@ async def _send_video(client: Client, job: Job, path: str, filename: str, status
         kwargs["progress_args"] = progress_args
 
     try:
-        sent = await client.send_video(job.user_id, upload_path, **kwargs)
-        return sent
+        return await client.send_video(job.user_id, upload_path, **kwargs)
     except Exception as first_error:
         try:
             reset_progress(job.job_id)
@@ -99,9 +93,7 @@ async def _send_video(client: Client, job: Job, path: str, filename: str, status
                 document_kwargs["progress_args"] = ("Uploading", status, time.time(), job.job_id)
             return await client.send_document(job.user_id, upload_path, **document_kwargs)
         except Exception as second_error:
-            raise RuntimeError(
-                f"Video upload failed: {str(first_error)[:700]} | document fallback: {str(second_error)[:700]}"
-            ) from second_error
+            raise RuntimeError(f"Video upload failed: {str(first_error)[:700]} | document fallback: {str(second_error)[:700]}") from second_error
 
 
 async def _send_plain_output(client: Client, job: Job, path: str, filename: str, status: Message | None = None):
@@ -144,6 +136,24 @@ async def _deliver_output(client: Client, job: Job, path: str, filename: str, st
                 sent_messages.append(sent)
                 await archive_message(client, sent)
             return sent_messages
+
+    if os.path.getsize(path) > 0:
+        parts = await split_file_for_telegram(path, job.work_dir, filename)
+        if len(parts) > 1:
+            sent_messages = []
+            total = len(parts)
+            for index, part in enumerate(parts, 1):
+                if status:
+                    await protect_message(status.chat.id, status.id)
+                part_name = os.path.basename(part)
+                sent = await _send_plain_output(client, job, part, part_name, status)
+                if not sent:
+                    raise RuntimeError(f"Upload returned no message for part {index}/{total}")
+                await protect_result(sent)
+                sent_messages.append(sent)
+                await archive_message(client, sent)
+            return sent_messages
+
     sent = await _send_plain_output(client, job, path, filename, status)
     if sent:
         await protect_result(sent)
