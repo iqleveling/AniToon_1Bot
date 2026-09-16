@@ -32,24 +32,17 @@ def _video_upload_name(filename: str) -> str:
 
 
 async def _prepare_video(job: Job, path: str, filename: str):
-    """Prepare a Telegram video without doing an unnecessary second encode."""
-    upload_path = path
+    """Prepare a video exactly once before Telegram upload."""
     upload_name = _video_upload_name(filename)
-
-    # prepare_video_for_telegram copies/remuxes H.264 sources and encodes only
-    # when the source video codec itself is incompatible with Telegram video.
-    if _extension(filename) != "mp4" or not path.lower().endswith(".mp4"):
+    # A previous conversion already produced MP4. Never probe/remux/re-encode it
+    # a second time: go straight to Telegram after one metadata read.
+    if path.lower().endswith(".mp4") and _extension(filename) == "mp4":
+        upload_path = path
+    else:
         mp4_path = os.path.join(job.work_dir, f".telegram_{uuid.uuid4().hex}.mp4")
-        prepared = await prepare_video_for_telegram(path, mp4_path)
-        if not prepared:
+        upload_path = await prepare_video_for_telegram(path, mp4_path)
+        if not upload_path:
             raise RuntimeError("Could not prepare a valid Telegram video")
-        upload_path = prepared
-    elif path.lower().endswith(".mp4"):
-        # Even for an already-MP4 rename, probe/prepare only if required. The
-        # fast path hard-links/copies compatible H.264/AAC without encoding.
-        prepared = await prepare_video_for_telegram(path, path)
-        if prepared:
-            upload_path = prepared
 
     duration, width, height = await get_video_info(upload_path)
     if duration <= 0 or width <= 0 or height <= 0:
@@ -90,8 +83,6 @@ async def _send_video(client: Client, job: Job, path: str, filename: str, status
     try:
         return await client.send_video(job.user_id, upload_path, **kwargs)
     except RPCError as exc:
-        # Retry only the Telegram API call without optional thumbnail metadata.
-        # Never re-encode or resend the file as a document on a normal video path.
         if saved_thumb:
             kwargs.pop("thumb", None)
             reset_progress(job.job_id)
@@ -109,13 +100,10 @@ async def _send_plain_output(client: Client, job: Job, path: str, filename: str,
     from helper.utils import progress_for_pyrogram
     progress = progress_for_pyrogram if status else None
     args = ("Uploading", status, time.time(), job.job_id) if status else None
-
     if mime.startswith("video/") or ext in VIDEO_EXTENSIONS:
         return await _send_video(client, job, path, filename, status)
-
     if mime.startswith("audio/") or ext in {"mp3", "m4a", "aac", "flac", "ogg", "wav", "opus"}:
         return await client.send_audio(job.user_id, path, caption=None, progress=progress, progress_args=args) if progress else await client.send_audio(job.user_id, path, caption=None)
-
     return await client.send_document(job.user_id, path, caption=None, progress=progress, progress_args=args) if progress else await client.send_document(job.user_id, path, caption=None)
 
 
@@ -149,7 +137,7 @@ async def _deliver_output(client: Client, job: Job, path: str, filename: str, st
     if sent:
         await protect_result(sent)
         await archive_message(client, sent)
-    return [sent] if sent else []
+    return [sent]
 
 
 @Client.on_message(filters.private & (filters.document | filters.video | filters.audio), group=-1000)
@@ -170,31 +158,20 @@ async def repaired_file_download(client: Client, message: Message):
     extension = _extension(original_name)
     mime_type = getattr(media, "mime_type", None) or ""
     file_id = getattr(media, "file_id", "") or ""
-
     if used >= plan.daily_limit:
-        await message.reply_text(
-            "🚫 **Daily Limit Reached!**\n\n"
-            f"Current Plan: {plan.name}\nDaily Limit: `{humanbytes(plan.daily_limit)}`\nUsed: `{humanbytes(used)}`",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("💎 Upgrade", callback_data="upgrade")]]),
-        )
+        await message.reply_text("🚫 **Daily Limit Reached!**\n\n" f"Current Plan: {plan.name}\nDaily Limit: `{humanbytes(plan.daily_limit)}`\nUsed: `{humanbytes(used)}`", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("💎 Upgrade", callback_data="upgrade")]]))
         raise StopPropagation
 
     job_id = uuid.uuid4().hex[:12]
     work_dir = os.path.join("downloads", str(user_id), job_id)
     os.makedirs(work_dir, exist_ok=True)
     input_path = os.path.join(work_dir, original_name)
-    job = Job(
-        job_id=job_id, user_id=user_id, bot_id=bot_id, source_message_id=message.id,
-        work_dir=work_dir, input_path=input_path, original_name=original_name,
-        mime_type=mime_type,
-        extra={"extension": extension, "file_id": file_id, "source_message": message, "user_data": user_data, "used_before": used, "telegram_file_size": expected_size},
-    )
+    job = Job(job_id=job_id, user_id=user_id, bot_id=bot_id, source_message_id=message.id, work_dir=work_dir, input_path=input_path, original_name=original_name, mime_type=mime_type, extra={"extension": extension, "file_id": file_id, "source_message": message, "user_data": user_data, "used_before": used, "telegram_file_size": expected_size})
     if not await jobs.register(job):
         await message.reply_text("⏳ **You already have an active file job.**\n\nPlease finish or cancel it first.")
         raise StopPropagation
-
     await protect_message(message.chat.id, message.id)
-    text = (
+    status = await message.reply_text(
         "📂 **File Detected**\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
         f"📄 **Name**\n`{original_name}`\n"
@@ -202,10 +179,10 @@ async def repaired_file_download(client: Client, message: Message):
         f"📦 **Size**\n`{humanbytes(expected_size)}`\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
         f"🆔 **File ID**\n`{file_id}`\n\n"
-        "Choose an operation before downloading:"
+        "Choose an operation before downloading:",
+        reply_markup=file_action_menu(job_id),
     )
-    status = await message.reply_text(text, reply_markup=file_action_menu(job_id))
-    await jobs.update(job_id, extra={**job.extra, "status_message_id": status.id})
+    await jobs.update(job_id, extra={**job.extra, "status_message_id": status.id, "prompt_message_id": status.id})
     raise StopPropagation
 
 
