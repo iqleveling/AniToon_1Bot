@@ -37,8 +37,8 @@ async def _delete_rename_source(client: Client, job: Job) -> None:
 
 
 async def download_job(client: Client, message: Message, job: Job, status: Message) -> int:
-    """Download one job; queued jobs are cancellable before they acquire a slot."""
-    if os.path.isfile(job.input_path):
+    """Download one job. The shared semaphore creates the actual FIFO-style wait when slots are busy."""
+    if os.path.isfile(job.input_path) and os.path.getsize(job.input_path) > 0:
         actual = os.path.getsize(job.input_path)
         await jobs.update(job.job_id, extra={**job.extra, "downloaded_size": actual})
         await _delete_rename_source(client, job)
@@ -55,39 +55,114 @@ async def download_job(client: Client, message: Message, job: Job, status: Messa
         from helper.utils import is_transfer_cancelled
         if is_transfer_cancelled(job.job_id):
             raise AniToonTransferCancelled("Transfer cancelled by user")
+
         await jobs.acquire()
         acquired = True
         reset_progress(job.job_id)
         started = time.time()
         if expected_size:
             await progress_for_pyrogram(0, expected_size, "Downloading", status, started, job.job_id)
-        result = await client.download_media(message=source, file_name=job.input_path, progress=progress_for_pyrogram, progress_args=("Downloading", status, started, job.job_id))
+
+        result = await client.download_media(
+            message=source,
+            file_name=job.input_path,
+            progress=progress_for_pyrogram,
+            progress_args=("Downloading", status, started, job.job_id),
+        )
+
         if is_transfer_cancelled(job.job_id):
             raise AniToonTransferCancelled("Transfer cancelled by user")
+
         path = result if isinstance(result, str) and os.path.isfile(result) else job.input_path
         if path != job.input_path and os.path.isfile(path):
             os.replace(path, job.input_path)
         if not os.path.isfile(job.input_path):
             raise RuntimeError("Telegram download completed but the local file was not found")
+
         actual = os.path.getsize(job.input_path)
         if expected_size and actual != expected_size:
             raise RuntimeError(f"Incomplete download: expected {humanbytes(expected_size)}, got {humanbytes(actual)}")
+
         await jobs.update(job.job_id, extra={**job.extra, "downloaded_size": actual})
         await progress_for_pyrogram(actual, expected_size or actual, "Downloading", status, started, job.job_id)
         await _delete_rename_source(client, job)
         await protect_transfer_message(status)
         return actual
     except AniToonTransferCancelled:
-        try: await status.edit_text("❌ **Processing cancelled.**")
-        except Exception: pass
+        try:
+            await status.edit_text("❌ **Processing cancelled.**")
+        except Exception:
+            pass
         raise
     except asyncio.CancelledError:
+        # Do not silently leave a queue entry behind when its worker is cancelled.
         await jobs.remove(job.job_id)
-        try: shutil.rmtree(job.work_dir, ignore_errors=True)
-        except Exception: pass
+        try:
+            shutil.rmtree(job.work_dir, ignore_errors=True)
+        except Exception:
+            pass
         raise
     except FloodWait:
         raise
+    finally:
+        await unregister_task(job.job_id, task)
+        if acquired:
+            jobs.release()
+
+
+async def upload_job(client: Client, job: Job, path: str, filename: str, status: Message | None = None, *, as_video: bool = False):
+    """Central upload helper with live progress and a real transmission slot."""
+    if not os.path.isfile(path) or os.path.getsize(path) <= 0:
+        raise RuntimeError("Upload source is missing or empty")
+
+    acquired = False
+    task = await register_task(job.job_id)
+    try:
+        await jobs.acquire()
+        acquired = True
+        reset_progress(job.job_id)
+        started = time.time()
+        size = os.path.getsize(path)
+        kwargs = {
+            "progress": progress_for_pyrogram,
+            "progress_args": ("Uploading", status, started, job.job_id),
+        }
+
+        if as_video:
+            from helper.ffmpeg import get_video_info
+            duration, width, height = await get_video_info(path)
+            if duration <= 0 or width <= 0 or height <= 0:
+                raise RuntimeError("Video metadata could not be read before upload")
+            kwargs.update({
+                "caption": f"✅ **AniToon Processed**\n\n📂 `{filename}`\n📦 `{humanbytes(size)}`",
+                "duration": max(1, int(round(duration))),
+                "width": int(width),
+                "height": int(height),
+                "supports_streaming": True,
+                "file_name": filename,
+            })
+            thumb = None
+            try:
+                from helper.database import db
+                thumb = await db.get_thumbnail(job.user_id)
+            except Exception:
+                thumb = None
+            if thumb:
+                kwargs["thumb"] = thumb
+            try:
+                return await client.send_video(job.user_id, path, **kwargs)
+            except Exception as exc:
+                if thumb and "thumb" in str(exc).lower():
+                    kwargs.pop("thumb", None)
+                    return await client.send_video(job.user_id, path, **kwargs)
+                raise RuntimeError(f"Telegram video upload failed: {exc}") from exc
+
+        kwargs["caption"] = f"✅ **AniToon Processed**\n\n📂 `{filename}`\n📦 `{humanbytes(size)}`"
+        ext = os.path.splitext(filename)[1].lower()
+        mime = (job.mime_type or "").lower()
+        if mime.startswith("audio/") or ext in {".mp3", ".m4a", ".aac", ".flac", ".ogg", ".wav", ".opus"}:
+            return await client.send_audio(job.user_id, path, **kwargs)
+        return await client.send_document(job.user_id, path, **kwargs)
     finally:
         await unregister_task(job.job_id, task)
         if acquired:
@@ -101,6 +176,8 @@ async def cancel_job(job_id: str, user_id: int, status: Message | None = None) -
     from helper.utils import request_transfer_cancel
     request_transfer_cancel(job_id)
     if status:
-        try: await status.edit_text("❌ **Cancelling processing...**")
-        except Exception: pass
+        try:
+            await status.edit_text("❌ **Cancelling processing...**")
+        except Exception:
+            pass
     return True
