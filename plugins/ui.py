@@ -11,7 +11,7 @@ def force_sub_menu():
 def main_menu(is_main_bot: bool = True, is_owner: bool = False):
     rows = [
         [InlineKeyboardButton("🛠 Help", callback_data="help"), InlineKeyboardButton("⚙️ Settings", callback_data="settings")],
-        [InlineKeyboardButton("✏️ Rename", callback_data="start_rename")],
+        [InlineKeyboardButton("✏️ Rename", callback_data="start_rename"), InlineKeyboardButton("🔄 Convert", callback_data="start_convert")],
     ]
     if is_main_bot:
         rows.append([InlineKeyboardButton("🤖 Create Your Own Clone Bot", callback_data="create_clone")])
@@ -29,47 +29,31 @@ def settings_menu():
 
 
 def help_menu():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("⚙️ Settings", callback_data="settings")],
-        [InlineKeyboardButton("🔙 Back", callback_data="start")],
-    ])
+    return InlineKeyboardMarkup([[InlineKeyboardButton("⚙️ Settings", callback_data="settings")], [InlineKeyboardButton("🔙 Back", callback_data="start")]])
 
 
 def thumbnail_menu():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("👁 View Thumbnail", callback_data="view_thumb")],
-        [InlineKeyboardButton("🗑 Delete Thumbnail", callback_data="delete_thumb")],
-        [InlineKeyboardButton("🔙 Back", callback_data="settings")],
-    ])
+    return InlineKeyboardMarkup([[InlineKeyboardButton("👁 View Thumbnail", callback_data="view_thumb")], [InlineKeyboardButton("🗑 Delete Thumbnail", callback_data="delete_thumb")], [InlineKeyboardButton("🔙 Back", callback_data="settings")]])
 
 
 def file_action_menu(job_id: str):
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("✏️ Rename", callback_data=f"job:rename:{job_id}")],
-        [InlineKeyboardButton("🛠 Advanced", callback_data=f"job:advanced:{job_id}")],
+        [InlineKeyboardButton("✏️ Rename", callback_data=f"job:rename:{job_id}"), InlineKeyboardButton("🤖 Auto Rename", callback_data=f"job:auto:{job_id}")],
+        [InlineKeyboardButton("🔄 Convert", callback_data=f"job:convert:{job_id}"), InlineKeyboardButton("🛠 Advanced", callback_data=f"job:advanced:{job_id}")],
         [InlineKeyboardButton("❌ Cancel", callback_data=f"transfer:cancel:{job_id}")],
     ])
 
 
 def rename_format_menu(job_id: str):
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📄 Document", callback_data=f"job:renameformat:{job_id}:document"), InlineKeyboardButton("🎬 Video", callback_data=f"job:renameformat:{job_id}:video")],
-        [InlineKeyboardButton("🔙 Back", callback_data=f"job:back:{job_id}")],
-    ])
+    return InlineKeyboardMarkup([[InlineKeyboardButton("📄 Document", callback_data=f"job:renameformat:{job_id}:document"), InlineKeyboardButton("🎬 Video", callback_data=f"job:renameformat:{job_id}:video")], [InlineKeyboardButton("🔙 Back", callback_data=f"job:back:{job_id}")]])
 
 
 def rename_output_menu(job_id: str):
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📄 Convert into File", callback_data=f"renameoutput:{job_id}:file"), InlineKeyboardButton("🎬 Convert into Video", callback_data=f"renameoutput:{job_id}:video")],
-        [InlineKeyboardButton("❌ Cancel", callback_data=f"transfer:cancel:{job_id}")],
-    ])
+    return InlineKeyboardMarkup([[InlineKeyboardButton("📄 Convert into File", callback_data=f"renameoutput:{job_id}:file"), InlineKeyboardButton("🎬 Convert into Video", callback_data=f"renameoutput:{job_id}:video")], [InlineKeyboardButton("❌ Cancel", callback_data=f"transfer:cancel:{job_id}")]])
 
 
 def auto_preview_menu(job_id: str):
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Confirm", callback_data=f"job:confirmauto:{job_id}")],
-        [InlineKeyboardButton("✏️ Custom Rename", callback_data=f"job:rename:{job_id}"), InlineKeyboardButton("🔙 Back", callback_data=f"job:back:{job_id}")],
-    ])
+    return InlineKeyboardMarkup([[InlineKeyboardButton("✅ Confirm", callback_data=f"job:confirmauto:{job_id}")], [InlineKeyboardButton("✏️ Custom Rename", callback_data=f"job:rename:{job_id}"), InlineKeyboardButton("🔙 Back", callback_data=f"job:back:{job_id}")]])
 
 
 def convert_menu(job_id: str):
@@ -77,7 +61,7 @@ def convert_menu(job_id: str):
         [InlineKeyboardButton("🎬 MP4", callback_data=f"job:format:{job_id}:mp4"), InlineKeyboardButton("🎞 MKV", callback_data=f"job:format:{job_id}:mkv")],
         [InlineKeyboardButton("🌐 WEBM", callback_data=f"job:format:{job_id}:webm"), InlineKeyboardButton("🎬 MOV", callback_data=f"job:format:{job_id}:mov")],
         [InlineKeyboardButton("🎵 MP3", callback_data=f"job:format:{job_id}:mp3"), InlineKeyboardButton("🎵 M4A", callback_data=f"job:format:{job_id}:m4a")],
-        [InlineKeyboardButton("🔙 Back", callback_data=f"job:back:{job_id}"),],
+        [InlineKeyboardButton("🔙 Back", callback_data=f"job:back:{job_id}")],
     ])
 
 
@@ -94,12 +78,8 @@ def advanced_menu(job_id: str):
 
 async def edit_callback_message(callback_query, text, reply_markup=None):
     message = callback_query.message
-    try:
-        return await message.edit_text(text, reply_markup=reply_markup)
-    except Exception:
-        pass
-    try:
-        return await message.edit_caption(caption=text, reply_markup=reply_markup)
-    except Exception:
-        pass
+    try: return await message.edit_text(text, reply_markup=reply_markup)
+    except Exception: pass
+    try: return await message.edit_caption(caption=text, reply_markup=reply_markup)
+    except Exception: pass
     return await message.reply_text(text, reply_markup=reply_markup)
