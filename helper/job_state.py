@@ -36,12 +36,9 @@ class JobManager:
         self._lock = asyncio.Lock()
 
     async def register(self, job: Job) -> bool:
-        """Register one job per user; transfers wait on the shared semaphore."""
+        """Register every submitted job; processing waits for a shared FIFO-style slot queue."""
         async with self._lock:
             user_id = int(job.user_id)
-            existing = self._user_jobs.get(user_id, [])
-            if any(job_id in self._jobs for job_id in existing):
-                return False
             self._jobs[job.job_id] = job
             self._user_jobs.setdefault(user_id, []).append(job.job_id)
             return True
@@ -58,11 +55,11 @@ class JobManager:
     async def get_user_job(self, user_id: int) -> Job | None:
         async with self._lock:
             ids = self._user_jobs.get(int(user_id), [])
-            jobs = [self._jobs[job_id] for job_id in ids if job_id in self._jobs]
-            for job in jobs:
+            current = [self._jobs[job_id] for job_id in ids if job_id in self._jobs]
+            for job in current:
                 if job.selected_action:
                     return job
-            return jobs[0] if jobs else None
+            return current[0] if current else None
 
     async def update(self, job_id: str, **values: Any) -> Job | None:
         async with self._lock:
@@ -89,11 +86,19 @@ class JobManager:
                 self._user_jobs.pop(job.user_id, None)
 
     async def position(self, job_id: str) -> int:
+        """Return the FIFO position among jobs that have selected a processing action."""
         async with self._lock:
             job = self._jobs.get(job_id)
             if not job:
                 return 0
-            waiting = sorted((j for j in self._jobs.values() if j.active), key=lambda item: item.queued_at)
+            waiting = sorted(
+                (
+                    item
+                    for item in self._jobs.values()
+                    if item.active and item.selected_action
+                ),
+                key=lambda item: item.queued_at,
+            )
             for index, item in enumerate(waiting, start=1):
                 if item.job_id == job_id:
                     return index
