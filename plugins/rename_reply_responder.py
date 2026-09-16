@@ -11,7 +11,13 @@ from helper.database import db
 from helper.ffmpeg import convert_media
 from helper.job_state import jobs
 from helper.job_transfer import download_job
-from helper.message_cleanup import delete_transfer_message, delete_user_job_messages, protect_message, protect_result
+from helper.message_cleanup import (
+    delete_transfer_message,
+    delete_user_job_messages,
+    protect_message,
+    protect_result,
+    protect_transfer_message,
+)
 from helper.utils import AniToonTransferCancelled, clear_transfer_cancel, humanbytes, progress_for_pyrogram, reset_progress
 from plugins.file_action_fix import _deliver_output
 from plugins.rename import _base_without_extension, _extension, _safe_filename
@@ -77,6 +83,9 @@ async def _processing_progress(status, job, current_bytes, total_bytes, start_ti
             f"⏱ ETA: `{eta_text}`"
         )
         job._last_processing_progress = now
+        # Processing edits do not go through the progress callback, so explicitly
+        # re-protect the same status message after every edit.
+        await protect_transfer_message(status)
     except Exception:
         pass
 
@@ -87,9 +96,10 @@ async def _new_transfer_status(message, job, expected_size):
         "Preparing transfer...",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data=f"transfer:cancel:{job.job_id}")]]),
     )
-    await protect_message(status.chat.id, status.id)
+    await protect_transfer_message(status)
     reset_progress(job.job_id)
     await progress_for_pyrogram(0, expected_size, "Downloading", status, time.time(), job.job_id)
+    await protect_transfer_message(status)
     return status
 
 
@@ -130,6 +140,7 @@ async def reliable_rename_reply(client, message):
         try:
             await _download_source(client, message, job, status)
             await status.edit_text("⚙️ **Processing...**")
+            await protect_transfer_message(status)
             job._last_processing_progress = 0.0
             processing_start = time.time()
             output_path = os.path.join(job.work_dir, name)
@@ -144,12 +155,15 @@ async def reliable_rename_reply(client, message):
             final_size = os.path.getsize(output_path) if os.path.isfile(output_path) else input_size
             await _processing_progress(status, job, final_size, input_size, processing_start, force=True)
 
-            await protect_message(status.chat.id, status.id)
+            await protect_transfer_message(status)
             results = await _deliver_output(client, job, output_path, name, status)
             for result in results or []:
                 await protect_result(result)
             size = os.path.getsize(output_path)
             await db.update_usage(job.user_id, job.bot_id, size)
+
+            # Only after the result message(s) have been successfully sent and
+            # protected do we replace/delete the transfer progress message.
             await status.edit_text(f"✅ **Conversion Complete!**\n\n📂 `{name}`\n📦 `{humanbytes(size)}`")
             await protect_result(status)
             await _cleanup_successful_user_input(client, message, job)
@@ -179,16 +193,20 @@ async def reliable_rename_reply(client, message):
         try:
             await _download_source(client, message, job, status)
             await status.edit_text("⚙️ **Processing...**")
+            await protect_transfer_message(status)
             os.replace(job.input_path, output_path)
             if job.extra.get("rename_output_mode") == "video":
                 job.mime_type = "video/mp4"
 
-            await protect_message(status.chat.id, status.id)
+            await protect_transfer_message(status)
             results = await _deliver_output(client, job, output_path, name, status)
             for result in results or []:
                 await protect_result(result)
             size = os.path.getsize(output_path)
             await db.update_usage(job.user_id, job.bot_id, size)
+
+            # Keep the progress/status message alive through the complete upload.
+            # It is removed only now, after successful result delivery.
             await status.edit_text(f"✅ **Rename Complete!**\n\n📂 `{name}`\n📦 `{humanbytes(size)}`")
             await protect_result(status)
             await _cleanup_successful_user_input(client, message, job)
