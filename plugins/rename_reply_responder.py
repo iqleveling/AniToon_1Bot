@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import shutil
 import time
@@ -68,9 +69,6 @@ async def _new_transfer_status(client, message, job, expected_size):
     reset_progress(job.job_id)
     await progress_for_pyrogram(0, expected_size, "Downloading", status, time.time(), job.job_id)
     await protect_transfer_message(status)
-
-    # Once the next bot response exists, remove exactly the user's filename
-    # message. No other user or bot messages are touched.
     await _delete_message_safely(client, message.chat.id, message.id)
     return status
 
@@ -96,7 +94,6 @@ async def _conversion_progress(current: float, total: float, status, job_id: str
 async def _convert_with_progress(job, status, output_path, output_format, label):
     async def report(current, total):
         await _conversion_progress(current, total, status, job.job_id, label)
-
     return await convert_media(job.input_path, output_path, output_format, report)
 
 
@@ -107,7 +104,6 @@ async def _finish_delivery(client, message, job, status):
 
 
 async def _convert_rename_to_video(job, name: str, status):
-    """Create a real MP4 only when the source is not already MP4."""
     if job.extra.get("rename_output_mode") != "video":
         return os.path.join(job.work_dir, name)
     if _extension(job.original_name) == "mp4":
@@ -139,32 +135,32 @@ async def reliable_rename_reply(client, message):
         if not ext:
             await _delete_message_safely(client, message.chat.id, getattr(message, "id", None))
             raise StopPropagation
-
         name = _safe_filename(text)
         if _extension(name) != ext:
             name = f"{_base_without_extension(name)}.{ext}"
-
         expected_size = int((job.extra or {}).get("telegram_file_size", 0) or 0)
         status = await _new_transfer_status(client, message, job, expected_size)
         try:
             await _download_source(client, message, job, status)
             output_path = os.path.join(job.work_dir, name)
-
             if not await _convert_with_progress(job, status, output_path, ext, name):
                 raise RuntimeError("FFmpeg conversion failed")
-
             results = await _deliver_output(client, job, output_path, name, status)
             for result in results or []:
                 await protect_result(result)
             if not results:
                 raise RuntimeError("Telegram returned no uploaded result")
-
-            size = os.path.getsize(output_path)
-            await db.update_usage(job.user_id, job.bot_id, size)
+            await db.update_usage(job.user_id, job.bot_id, os.path.getsize(output_path))
             await _finish_delivery(client, message, job, status)
         except AniToonTransferCancelled:
             await status.edit_text("❌ **Processing cancelled.**")
             await protect_transfer_message(status)
+        except asyncio.CancelledError:
+            clear_transfer_cancel(job.job_id)
+            try:
+                await status.edit_text("❌ **Processing cancelled.**")
+            except Exception:
+                pass
         except Exception as exc:
             await status.edit_text(f"❌ **Conversion failed**\n\n`{str(exc)[:1000]}`")
             await protect_transfer_message(status)
@@ -185,7 +181,6 @@ async def reliable_rename_reply(client, message):
         status = await _new_transfer_status(client, message, job, int((job.extra or {}).get("telegram_file_size", 0) or 0))
         try:
             await _download_source(client, message, job, status)
-
             if job.extra.get("rename_output_mode") == "video":
                 video_path = await _convert_rename_to_video(job, name, status)
                 if video_path != os.path.join(job.work_dir, name):
@@ -204,13 +199,17 @@ async def reliable_rename_reply(client, message):
                 await protect_result(result)
             if not results:
                 raise RuntimeError("Telegram returned no uploaded result")
-
-            size = os.path.getsize(output_path)
-            await db.update_usage(job.user_id, job.bot_id, size)
+            await db.update_usage(job.user_id, job.bot_id, os.path.getsize(output_path))
             await _finish_delivery(client, message, job, status)
         except AniToonTransferCancelled:
             await status.edit_text("❌ **Processing cancelled.**")
             await protect_transfer_message(status)
+        except asyncio.CancelledError:
+            clear_transfer_cancel(job.job_id)
+            try:
+                await status.edit_text("❌ **Processing cancelled.**")
+            except Exception:
+                pass
         except Exception as exc:
             await status.edit_text(f"❌ **Rename failed**\n\n`{str(exc)[:1000]}`")
             await protect_transfer_message(status)
