@@ -14,8 +14,8 @@ from helper.database import db
 from helper.ffmpeg import convert_media, get_video_info
 from helper.job_state import Job, jobs
 from helper.large_file import split_file_for_telegram
-from helper.large_video import is_large_video, make_thumbnail, split_video_for_telegram
-from helper.message_cleanup import protect_message, protect_result, delete_transfer_message
+from helper.large_video import is_large_video, split_video_for_telegram
+from helper.message_cleanup import protect_message, protect_result
 from helper.plans import get_plan
 from helper.utils import AniToonTransferCancelled, clear_transfer_cancel, humanbytes, progress_for_pyrogram, reset_progress
 from plugins.rename import _ask_name, _base_without_extension, _extension, _media_from_message, _safe_filename, _user_context
@@ -32,18 +32,16 @@ def _video_upload_name(filename: str) -> str:
 
 
 async def _prepare_video(client: Client, job: Job, path: str, filename: str, status: Message | None = None):
-    """Prepare only what is required, then let Telegram upload immediately.
+    """Prepare the minimum required data and return immediately to Telegram upload.
 
-    MP4 conversion already uses +faststart in helper.ffmpeg.convert_media. For an
-    existing MP4 rename there is no reason to remux the whole file again before
-    upload, which was causing a long pause after Download Progress reached 100%.
+    The old pipeline generated an automatic thumbnail after download and performed
+    extra FFmpeg work before upload. That made the visible download progress remain
+    at 100% while Telegram was not receiving anything. We now probe metadata once,
+    reuse a user's saved thumbnail when available, and otherwise send without a
+    generated thumbnail so upload can begin immediately.
     """
     upload_path = path
     upload_name = _video_upload_name(filename)
-
-    if status:
-        await protect_message(status.chat.id, status.id)
-        reset_progress(job.job_id)
 
     if _extension(filename) != "mp4":
         mp4_path = os.path.join(job.work_dir, f".upload_{uuid.uuid4().hex}.mp4")
@@ -51,21 +49,33 @@ async def _prepare_video(client: Client, job: Job, path: str, filename: str, sta
             raise RuntimeError("Could not create a Telegram-compatible MP4 video")
         upload_path = mp4_path
 
-    # Do not run a second full-file FFmpeg remux here. If conversion to MP4 was
-    # required, convert_media already generated a +faststart MP4. If the source
-    # is already MP4, upload it directly.
     duration, width, height = await get_video_info(upload_path)
     if not duration or not width or not height:
         raise RuntimeError("Video metadata could not be read after processing")
 
-    thumb = await make_thumbnail(upload_path, job.work_dir)
+    # A saved Telegram thumbnail is already available as a file_id. Reuse it
+    # directly; never generate a new FFmpeg screenshot on the upload path.
+    thumb = await db.get_thumbnail(job.user_id)
     return upload_path, upload_name, duration, width, height, thumb
+
+
+async def _show_upload_start(job: Job, status: Message | None, path: str) -> None:
+    if status is None:
+        return
+    total = max(1, os.path.getsize(path))
+    reset_progress(job.job_id)
+    await protect_message(status.chat.id, status.id)
+    await progress_for_pyrogram(0, total, "Uploading", status, time.time(), job.job_id)
 
 
 async def _send_video(client: Client, job: Job, path: str, filename: str, status: Message | None = None):
     upload_path, upload_name, duration, width, height, thumb = await _prepare_video(client, job, path, filename, status)
     progress = progress_for_pyrogram if status else None
     progress_args = ("Uploading", status, time.time(), job.job_id) if status else None
+
+    await _show_upload_start(job, status, upload_path)
+    if status:
+        progress_args = ("Uploading", status, time.time(), job.job_id)
 
     kwargs = {
         "caption": None,
@@ -84,13 +94,14 @@ async def _send_video(client: Client, job: Job, path: str, filename: str, status
     try:
         return await client.send_video(job.user_id, upload_path, **kwargs)
     except Exception as first_error:
+        # Keep a real upload path available even when Telegram rejects video
+        # metadata/thumb parameters. A document fallback is the final safety net.
         try:
             reset_progress(job.job_id)
             if status:
                 await protect_message(status.chat.id, status.id)
+                await progress_for_pyrogram(0, max(1, os.path.getsize(upload_path)), "Uploading", status, time.time(), job.job_id)
             document_kwargs = {"caption": None, "file_name": upload_name}
-            if thumb:
-                document_kwargs["thumb"] = thumb
             if progress:
                 document_kwargs["progress"] = progress
                 document_kwargs["progress_args"] = ("Uploading", status, time.time(), job.job_id)
@@ -104,13 +115,16 @@ async def _send_plain_output(client: Client, job: Job, path: str, filename: str,
     mime = job.mime_type or ""
     if not os.path.isfile(path) or os.path.getsize(path) <= 0:
         raise RuntimeError("Processed output is missing or empty")
-    reset_progress(job.job_id)
-    if status:
-        await protect_message(status.chat.id, status.id)
+
     progress = progress_for_pyrogram if status else None
     args = ("Uploading", status, time.time(), job.job_id) if status else None
+    if status:
+        await _show_upload_start(job, status, path)
+        args = ("Uploading", status, time.time(), job.job_id)
+
     if mime.startswith("video/") or ext in VIDEO_EXTENSIONS:
         return await _send_video(client, job, path, filename, status)
+
     if mime.startswith("audio/") or ext in {"mp3", "m4a", "aac", "flac", "ogg", "wav", "opus"}:
         try:
             return await client.send_audio(job.user_id, path, caption=None, progress=progress, progress_args=args) if progress else await client.send_audio(job.user_id, path, caption=None)
@@ -118,8 +132,10 @@ async def _send_plain_output(client: Client, job: Job, path: str, filename: str,
             reset_progress(job.job_id)
             if status:
                 await protect_message(status.chat.id, status.id)
+                await progress_for_pyrogram(0, max(1, os.path.getsize(path)), "Uploading", status, time.time(), job.job_id)
             args = ("Uploading", status, time.time(), job.job_id) if status else None
             return await client.send_document(job.user_id, path, caption=None, progress=progress, progress_args=args) if progress else await client.send_document(job.user_id, path, caption=None)
+
     return await client.send_document(job.user_id, path, caption=None, progress=progress, progress_args=args) if progress else await client.send_document(job.user_id, path, caption=None)
 
 
@@ -130,8 +146,6 @@ async def _deliver_output(client: Client, job: Job, path: str, filename: str, st
             sent_messages = []
             total = len(parts)
             for index, part in enumerate(parts, 1):
-                if status:
-                    await protect_message(status.chat.id, status.id)
                 sent = await _send_video(client, job, part, os.path.basename(part), status)
                 if not sent:
                     raise RuntimeError(f"Upload returned no message for part {index}/{total}")
@@ -146,8 +160,6 @@ async def _deliver_output(client: Client, job: Job, path: str, filename: str, st
             sent_messages = []
             total = len(parts)
             for index, part in enumerate(parts, 1):
-                if status:
-                    await protect_message(status.chat.id, status.id)
                 part_name = os.path.basename(part)
                 sent = await _send_plain_output(client, job, part, part_name, status)
                 if not sent:
@@ -198,7 +210,16 @@ async def repaired_file_download(client: Client, message: Message):
 
     await protect_message(message.chat.id, message.id)
 
-    text = ("📂 **File Detected**\n" "━━━━━━━━━━━━━━━━━━━━\n" f"📄 **Name**\n`{original_name}`\n" "━━━━━━━━━━━━━━━━━━━━\n" f"📦 **Size**\n`{humanbytes(expected_size)}`\n" "━━━━━━━━━━━━━━━━━━━━\n" f"🆔 **File ID**\n`{file_id}`\n\n" "Choose an operation before downloading:")
+    text = (
+        "📂 **File Detected**\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"📄 **Name**\n`{original_name}`\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"📦 **Size**\n`{humanbytes(expected_size)}`\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"🆔 **File ID**\n`{file_id}`\n\n"
+        "Choose an operation before downloading:"
+    )
     status = await message.reply_text(text, reply_markup=file_action_menu(job_id))
     await jobs.update(job_id, extra={**job.extra, "status_message_id": status.id})
     raise StopPropagation
@@ -211,8 +232,13 @@ async def rename_entry_fix(client, cb):
         await cb.answer("Job expired. Send the file again.", show_alert=True)
         raise StopPropagation
     await cb.answer()
+    try:
+        await cb.message.delete()
+    except Exception:
+        pass
     await jobs.update(job.job_id, selected_action="custom_name")
-    await _ask_name(client, job.user_id, "Enter new filename:", job.job_id, "custom_name")
+    prompt = await _ask_name(client, job.user_id, "✏️ **Rename:**\nSend me the new filename.", job.job_id, "custom_name")
+    await jobs.update(job.job_id, extra={**job.extra, "rename_prompt_message_id": prompt.id})
     raise StopPropagation
 
 
@@ -230,7 +256,8 @@ async def rename_format_fix(client, cb):
         await cb.message.delete()
     except Exception:
         pass
-    await _ask_name(client, job.user_id, "Enter new filename:", job.job_id, "custom_name")
+    prompt = await _ask_name(client, job.user_id, "✏️ **Rename:**\nSend me the new filename.", job.job_id, "custom_name")
+    await jobs.update(job.job_id, extra={**job.extra, "rename_prompt_message_id": prompt.id})
     raise StopPropagation
 
 
@@ -248,7 +275,8 @@ async def convert_entry_fix(client, cb):
         await cb.message.delete()
     except Exception:
         pass
-    await _ask_name(client, job.user_id, f"Enter new filename for {fmt.upper()}:\nThe `.{fmt}` extension will be used.", job.job_id, "convert_name")
+    prompt = await _ask_name(client, job.user_id, f"✏️ **Rename:**\nSend me the new filename for {fmt.upper()}.", job.job_id, "convert_name")
+    await jobs.update(job.job_id, extra={**job.extra, "rename_prompt_message_id": prompt.id})
     raise StopPropagation
 
 
@@ -261,7 +289,7 @@ async def rename_reply_fix(client, message: Message):
 
 
 @Client.on_message(filters.private & (filters.document | filters.video | filters.audio), group=-999)
-async def retry_file_when_waiting(client, message: Message):
+async def retry_file_when_waiting(client: Client, message: Message):
     job = await jobs.get_user_job(message.from_user.id)
     if not job or job.selected_action not in WAITING_ACTIONS:
         return
