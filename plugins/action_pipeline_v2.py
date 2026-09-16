@@ -38,7 +38,6 @@ async def _delete(client, chat_id, *ids):
 
 
 async def _safe_edit(message, text: str, reply_markup=None):
-    """Edit status without turning an already-current message into a job failure."""
     try:
         current = getattr(message, "text", None) or getattr(message, "caption", None)
         if current == text:
@@ -59,13 +58,14 @@ async def _finish_cleanup(client, job):
         job.extra.get("prompt_message_id"),
         job.extra.get("input_message_id"),
         job.extra.get("status_message_id"),
+        job.extra.get("rename_menu_message_id"),
+        job.extra.get("rename_prompt_message_id"),
     )
     shutil.rmtree(job.work_dir, ignore_errors=True)
     await jobs.remove(job.job_id)
 
 
 async def _send_result(client, job, path: str, name: str, status, kind: str):
-    """Upload the completed file and keep Telegram video metadata intact."""
     reset_progress(job.job_id)
     args = ("Uploading", status, time.time(), job.job_id)
 
@@ -78,9 +78,6 @@ async def _send_result(client, job, path: str, name: str, status, kind: str):
             raise RuntimeError("Output is not a valid video with duration and dimensions")
 
         upload_path = path
-        # Telegram's streaming player works best with MP4 + faststart. Do not
-        # remux an existing MP4 because the converter already created a valid
-        # streamable file and doing it twice can introduce unnecessary failures.
         if not path.lower().endswith(".mp4"):
             stream_path = os.path.join(job.work_dir, "streamable.mp4")
             ready = await make_streamable(path, stream_path)
@@ -106,21 +103,9 @@ async def _send_result(client, job, path: str, name: str, status, kind: str):
         )
 
     if kind == "audio":
-        return await client.send_audio(
-            job.user_id,
-            path,
-            caption=None,
-            progress=progress_for_pyrogram,
-            progress_args=args,
-        )
+        return await client.send_audio(job.user_id, path, caption=None, progress=progress_for_pyrogram, progress_args=args)
 
-    return await client.send_document(
-        job.user_id,
-        path,
-        caption=None,
-        progress=progress_for_pyrogram,
-        progress_args=args,
-    )
+    return await client.send_document(job.user_id, path, caption=None, progress=progress_for_pyrogram, progress_args=args)
 
 
 async def _run(client, job, status, name: str, kind: str, convert: bool):
@@ -130,9 +115,6 @@ async def _run(client, job, status, name: str, kind: str, convert: bool):
 
     await _safe_edit(status, "📥 **Downloading...**", reply_markup=cancel(job.job_id))
     await download_job(client, source, job, status)
-
-    # The download progress callback ended at 100%. Reset its throttle state
-    # before the upload stage so the first upload update is never suppressed.
     reset_progress(job.job_id)
 
     output = os.path.join(job.work_dir, name)
@@ -161,6 +143,7 @@ async def rename_entry_v2(client, cb):
     await cb.answer()
     await jobs.update(job.job_id, selected_action="rename_format")
     await cb.message.edit_text("✏️ **Rename**\n\nChoose output type:", reply_markup=rename_format_menu(job.job_id))
+    await jobs.update(job.job_id, extra={**job.extra, "rename_menu_message_id": cb.message.id})
     raise StopPropagation
 
 
@@ -172,7 +155,7 @@ async def rename_type_v2(client, cb):
         raise StopPropagation
     mode = cb.matches[0].group(2)
     await cb.answer()
-    await jobs.update(job.job_id, selected_action="custom_name", extra={**job.extra, "rename_output_mode": mode})
+    await jobs.update(job.job_id, selected_action="custom_name", extra={**job.extra, "rename_output_mode": mode, "rename_menu_message_id": cb.message.id})
     prompt = await client.send_message(
         job.user_id,
         "✏️ **Enter new filename:**\n\n" + (
@@ -182,7 +165,7 @@ async def rename_type_v2(client, cb):
         ),
         reply_markup=cancel(job.job_id),
     )
-    await jobs.update(job.job_id, extra={**job.extra, "prompt_message_id": prompt.id})
+    await jobs.update(job.job_id, extra={**job.extra, "prompt_message_id": prompt.id, "rename_menu_message_id": cb.message.id})
     raise StopPropagation
 
 
@@ -196,11 +179,7 @@ async def convert_type_v2(client, cb):
     await cb.answer()
     mime = "video/mp4" if fmt == "mp4" else "audio/mpeg" if fmt == "mp3" else "audio/mp4" if fmt == "m4a" else "application/octet-stream"
     await jobs.update(job.job_id, selected_action="convert_name", output_ext=fmt, mime_type=mime)
-    prompt = await client.send_message(
-        job.user_id,
-        f"🔄 **Convert to {fmt.upper()}**\n\nEnter the output filename. The `.{fmt}` extension will be used.",
-        reply_markup=cancel(job.job_id),
-    )
+    prompt = await client.send_message(job.user_id, f"🔄 **Convert to {fmt.upper()}**\n\nEnter the output filename. The `.{fmt}` extension will be used.", reply_markup=cancel(job.job_id))
     await jobs.update(job.job_id, extra={**job.extra, "prompt_message_id": prompt.id})
     raise StopPropagation
 
