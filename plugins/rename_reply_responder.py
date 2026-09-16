@@ -61,9 +61,9 @@ async def _processing_progress(status, job, current_bytes, total_bytes, start_ti
 
     try:
         await status.edit_text(
-            "⚙️ **Processing...**\n"
+            "📥 **Download Progress**\n"
             f"{bar} {percent:.2f}%\n\n"
-            f"📦 Processed: `{humanbytes(current)}` / `{humanbytes(total)}`\n"
+            f"📦 Size: `{humanbytes(current)}` / `{humanbytes(total)}`\n"
             f"🚀 Speed: `{humanbytes(speed)}/s`\n"
             f"⏱ ETA: `{eta_text}`",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data=f"transfer:cancel:{job.job_id}")]]),
@@ -140,15 +140,9 @@ async def reliable_rename_reply(client, message):
         try:
             await _download_source(client, message, job, status)
 
-            # download_job performs the atomic handoff to Processing. Keep this
-            # message separate from the download callback so it cannot remain at
-            # 100% while FFmpeg is already running.
-            await status.edit_text(
-                "⚙️ **Processing...**\n"
-                "Preparing video for conversion and upload...",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data=f"transfer:cancel:{job.job_id}")]]),
-            )
-            await protect_transfer_message(status)
+            # Do not show a separate Processing message. Keep the download
+            # progress message visible while the output is prepared. The first
+            # upload callback changes this same message directly to Upload Progress.
             job._last_processing_progress = 0.0
             processing_start = time.time()
             output_path = os.path.join(job.work_dir, name)
@@ -161,6 +155,9 @@ async def reliable_rename_reply(client, message):
             if not await convert_media(job.input_path, output_path, ext, progress_callback=processing_callback):
                 raise RuntimeError("FFmpeg conversion failed")
 
+            # Keep the final Download Progress 100% visible until _deliver_output
+            # actually invokes Telegram send_*; its upload callback then replaces
+            # this message with the full Upload Progress UI.
             final_size = os.path.getsize(output_path) if os.path.isfile(output_path) else input_size
             await _processing_progress(status, job, final_size, input_size, processing_start, force=True)
             await protect_transfer_message(status)
@@ -199,12 +196,9 @@ async def reliable_rename_reply(client, message):
         status = await _new_transfer_status(message, job, expected_size)
         try:
             await _download_source(client, message, job, status)
-            await status.edit_text(
-                "⚙️ **Processing...**\n"
-                "Preparing video for upload...",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data=f"transfer:cancel:{job.job_id}")]]),
-            )
-            await protect_transfer_message(status)
+
+            # Keep Download Progress visible while the local file is prepared;
+            # do not display the separate Processing message.
             os.replace(job.input_path, output_path)
             if job.extra.get("rename_output_mode") == "video":
                 job.mime_type = "video/mp4"
