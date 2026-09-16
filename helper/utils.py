@@ -1,3 +1,4 @@
+import asyncio
 import time
 
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
@@ -11,11 +12,15 @@ class AniToonTransferCancelled(Exception):
 
 _CANCELLED_TRANSFERS = set()
 _LAST_PROGRESS_UPDATE = {}
+_PAUSE_EVENTS = {}
 
 
 def request_transfer_cancel(job_id: str):
     if job_id:
         _CANCELLED_TRANSFERS.add(str(job_id))
+        event = _PAUSE_EVENTS.get(str(job_id))
+        if event is not None:
+            event.set()
 
 
 def clear_transfer_cancel(job_id: str):
@@ -23,6 +28,9 @@ def clear_transfer_cancel(job_id: str):
         key = str(job_id)
         _CANCELLED_TRANSFERS.discard(key)
         _LAST_PROGRESS_UPDATE.pop(key, None)
+        event = _PAUSE_EVENTS.pop(key, None)
+        if event is not None:
+            event.set()
 
 
 def reset_progress(job_id: str):
@@ -32,6 +40,30 @@ def reset_progress(job_id: str):
 
 def is_transfer_cancelled(job_id: str) -> bool:
     return bool(job_id and str(job_id) in _CANCELLED_TRANSFERS)
+
+
+def _pause_event(job_id: str) -> asyncio.Event:
+    key = str(job_id)
+    event = _PAUSE_EVENTS.get(key)
+    if event is None:
+        event = asyncio.Event()
+        event.set()
+        _PAUSE_EVENTS[key] = event
+    return event
+
+
+def request_transfer_pause(job_id: str):
+    if job_id:
+        _pause_event(job_id).clear()
+
+
+def request_transfer_resume(job_id: str):
+    if job_id:
+        _pause_event(job_id).set()
+
+
+def is_transfer_paused(job_id: str) -> bool:
+    return bool(job_id and not _pause_event(job_id).is_set())
 
 
 def humanbytes(size):
@@ -51,16 +83,11 @@ def time_formatter(milliseconds: int) -> str:
     hours, minutes = divmod(minutes, 60)
     days, hours = divmod(hours, 24)
     parts = []
-    if days:
-        parts.append(f"{days}d")
-    if hours:
-        parts.append(f"{hours}h")
-    if minutes:
-        parts.append(f"{minutes}m")
-    if seconds:
-        parts.append(f"{seconds}s")
-    if milliseconds and not parts:
-        parts.append(f"{milliseconds}ms")
+    if days: parts.append(f"{days}d")
+    if hours: parts.append(f"{hours}h")
+    if minutes: parts.append(f"{minutes}m")
+    if seconds: parts.append(f"{seconds}s")
+    if milliseconds and not parts: parts.append(f"{milliseconds}ms")
     return " ".join(parts) or "0s"
 
 
@@ -78,33 +105,30 @@ def _progress_text(current, total, ud_type, start):
     eta_text = "calculating..."
     if speed > 0 and total >= current:
         eta_text = time_formatter(max(0, int((total - current) / speed)) * 1000)
-
-    is_upload = "upload" in str(ud_type).lower()
-    title = "📤 Upload Progress" if is_upload else "📥 Download Progress"
-    return (
-        f"{title}\n"
-        f"{_progress_bar(percentage)} {percentage:.2f}%\n\n"
-        f"📦 Size: {humanbytes(current)} / {humanbytes(total)}\n"
-        f"🚀 Speed: {humanbytes(speed)}/s\n"
-        f"⏱ ETA: {eta_text}"
-    )
+    title = "📤 Upload Progress" if "upload" in str(ud_type).lower() else "📥 Download Progress"
+    return f"{title}\n{_progress_bar(percentage)} {percentage:.2f}%\n\n📦 Size: {humanbytes(current)} / {humanbytes(total)}\n🚀 Speed: {humanbytes(speed)}/s\n⏱ ETA: {eta_text}"
 
 
-def _cancel_markup(job_id):
+def _transfer_markup(job_id, ud_type):
     if not job_id:
         return None
-    return InlineKeyboardMarkup(
-        [[InlineKeyboardButton("❌ Cancel", callback_data=f"transfer:cancel:{job_id}")]]
-    )
+    if "upload" in str(ud_type).lower():
+        return InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data=f"transfer:cancel:{job_id}")]])
+    paused = is_transfer_paused(job_id)
+    action = "resume" if paused else "pause"
+    label = "▶️ Resume" if paused else "⏸️ Pause"
+    return InlineKeyboardMarkup([[InlineKeyboardButton(label, callback_data=f"transfer:{action}:{job_id}"), InlineKeyboardButton("❌ Cancel", callback_data=f"transfer:cancel:{job_id}")]])
 
 
 async def progress_for_pyrogram(current, total, ud_type, message, start, job_id=None):
-    """Show the real transfer progress message; never leave only a static Downloading line."""
     if job_id and is_transfer_cancelled(job_id):
         raise AniToonTransferCancelled("Transfer cancelled by user")
+    if job_id and "upload" not in str(ud_type).lower():
+        await _pause_event(job_id).wait()
+        if is_transfer_cancelled(job_id):
+            raise AniToonTransferCancelled("Transfer cancelled by user")
     if message is None:
         return
-
     key = str(job_id) if job_id else str(id(message))
     now = time.time()
     interval = max(1.0, float(getattr(Config, "PROGRESS_UPDATE_INTERVAL", 1.5)))
@@ -112,12 +136,8 @@ async def progress_for_pyrogram(current, total, ud_type, message, start, job_id=
     is_final = bool(total and current >= total)
     if last is not None and not is_final and now - last < interval:
         return
-
     try:
-        await message.edit_text(
-            _progress_text(current, total, ud_type, start),
-            reply_markup=_cancel_markup(job_id),
-        )
+        await message.edit_text(_progress_text(current, total, ud_type, start), reply_markup=_transfer_markup(job_id, ud_type))
         _LAST_PROGRESS_UPDATE[key] = now
     except Exception:
         pass
