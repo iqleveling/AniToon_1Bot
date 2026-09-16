@@ -5,7 +5,6 @@ import shutil
 import time
 
 from pyrogram import Client, StopPropagation, filters
-from pyrogram.errors import FloodWait
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from helper.database import db
@@ -60,7 +59,7 @@ async def _delete_message_safely(client, chat_id, message_id):
         pass
 
 
-async def _new_transfer_status(message, job, expected_size):
+async def _new_transfer_status(client, message, job, expected_size):
     status = await message.reply_text(
         _initial_download_text(expected_size),
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data=f"transfer:cancel:{job.job_id}")]]),
@@ -70,9 +69,9 @@ async def _new_transfer_status(message, job, expected_size):
     await progress_for_pyrogram(0, expected_size, "Downloading", status, time.time(), job.job_id)
     await protect_transfer_message(status)
 
-    # The user's filename is a one-step flow message. Once the next bot response
-    # exists, remove that exact message immediately; never delete other messages.
-    await _delete_message_safely(client=message._client, chat_id=message.chat.id, message_id=message.id)
+    # Once the next bot response exists, remove exactly the user's filename
+    # message. No other user or bot messages are touched.
+    await _delete_message_safely(client, message.chat.id, message.id)
     return status
 
 
@@ -81,10 +80,11 @@ async def _conversion_progress(current: float, total: float, status, job_id: str
         return
     percent = max(0.0, min(99.9, (float(current) * 100.0) / float(total)))
     try:
+        filled = max(0, min(24, int(percent / 100 * 24)))
         await status.edit_text(
             "⚙️ **Converting**\n"
-            + ("█" * max(0, min(24, int(percent / 100 * 24))))
-            + ("░" * max(0, 24 - int(percent / 100 * 24)))
+            + ("█" * filled)
+            + ("░" * (24 - filled))
             + f" {percent:.1f}%\n\n"
             f"📂 `{label}`",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data=f"transfer:cancel:{job_id}")]]),
@@ -145,7 +145,7 @@ async def reliable_rename_reply(client, message):
             name = f"{_base_without_extension(name)}.{ext}"
 
         expected_size = int((job.extra or {}).get("telegram_file_size", 0) or 0)
-        status = await _new_transfer_status(message, job, expected_size)
+        status = await _new_transfer_status(client, message, job, expected_size)
         try:
             await _download_source(client, message, job, status)
             output_path = os.path.join(job.work_dir, name)
@@ -182,7 +182,7 @@ async def reliable_rename_reply(client, message):
         elif _extension(name) and ext:
             name = f"{_base_without_extension(name)}.{ext}"
 
-        status = await _new_transfer_status(message, job, int((job.extra or {}).get("telegram_file_size", 0) or 0))
+        status = await _new_transfer_status(client, message, job, int((job.extra or {}).get("telegram_file_size", 0) or 0))
         try:
             await _download_source(client, message, job, status)
 
