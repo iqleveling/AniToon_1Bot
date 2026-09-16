@@ -20,6 +20,7 @@ BOT_COMMANDS = [
     BotCommand("start", "Open AniToon"),
     BotCommand("help", "Show help"),
     BotCommand("cancel", "Cancel current processing"),
+    BotCommand("queue", "Show queue file information"),
 ]
 
 
