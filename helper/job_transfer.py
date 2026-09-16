@@ -7,6 +7,7 @@ from pyrogram import Client
 from pyrogram.errors import FloodWait
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 
+from helper.cancel_manager import register_task, unregister_task
 from helper.job_state import Job, jobs
 from helper.message_cleanup import protect_transfer_message
 from helper.utils import AniToonTransferCancelled, humanbytes, progress_for_pyrogram, reset_progress
@@ -19,19 +20,16 @@ def cancel_markup(job_id: str):
 
 
 async def _show_processing(status: Message | None):
-    """Deprecated visual state: intentionally do not show a Processing message."""
-    if status is None:
-        return
-    await protect_transfer_message(status)
+    """Compatibility helper; keep the transfer status visible."""
+    if status is not None:
+        await protect_transfer_message(status)
 
 
 async def _delete_rename_source(client: Client, job: Job) -> None:
-    """Delete only the original user file for an active rename/convert job.
-
-    The local copy is already complete, so Telegram no longer needs the source
-    message. Unrelated messages and all bot results are never touched.
-    """
-    if getattr(job, "selected_action", None) not in {"rename_output_choice", "rename_format", "custom_name", "convert_name"}:
+    """Delete only the original source after its local copy is complete."""
+    if getattr(job, "selected_action", None) not in {
+        "rename_output_choice", "rename_format", "custom_name", "convert_name"
+    }:
         return
     message_id = getattr(job, "source_message_id", None)
     if not message_id:
@@ -43,7 +41,7 @@ async def _delete_rename_source(client: Client, job: Job) -> None:
 
 
 async def download_job(client: Client, message: Message, job: Job, status: Message) -> int:
-    """Download a deferred job without replacing the progress UI with Processing."""
+    """Download one job and allow both the button and /cancel to interrupt it."""
     if os.path.isfile(job.input_path):
         actual = os.path.getsize(job.input_path)
         await _delete_rename_source(client, job)
@@ -55,15 +53,19 @@ async def download_job(client: Client, message: Message, job: Job, status: Messa
 
     os.makedirs(job.work_dir, exist_ok=True)
     await jobs.acquire()
+    task = await register_task(job.job_id)
     try:
         from helper.utils import is_transfer_cancelled
+
         if is_transfer_cancelled(job.job_id):
             raise AniToonTransferCancelled("Transfer cancelled by user")
 
         reset_progress(job.job_id)
         started = time.time()
         if expected_size:
-            await progress_for_pyrogram(0, expected_size, "Downloading", status, started, job.job_id)
+            await progress_for_pyrogram(
+                0, expected_size, "Downloading", status, started, job.job_id
+            )
 
         result = await client.download_media(
             message=source,
@@ -71,6 +73,10 @@ async def download_job(client: Client, message: Message, job: Job, status: Messa
             progress=progress_for_pyrogram,
             progress_args=("Downloading", status, started, job.job_id),
         )
+
+        if is_transfer_cancelled(job.job_id):
+            raise AniToonTransferCancelled("Transfer cancelled by user")
+
         path = result if isinstance(result, str) and os.path.isfile(result) else job.input_path
         if path != job.input_path and os.path.isfile(path):
             os.replace(path, job.input_path)
@@ -83,10 +89,6 @@ async def download_job(client: Client, message: Message, job: Job, status: Messa
                 f"Incomplete download: expected {humanbytes(expected_size)}, got {humanbytes(actual)}"
             )
 
-        # The callback may briefly reach 100% before download_media() returns.
-        # We only consider the download complete after the awaited call and the
-        # local size check above have succeeded. Then the same status message can
-        # immediately move to conversion/upload.
         await progress_for_pyrogram(
             actual,
             expected_size or actual,
@@ -108,6 +110,7 @@ async def download_job(client: Client, message: Message, job: Job, status: Messa
     except FloodWait:
         raise
     finally:
+        await unregister_task(job.job_id, task)
         jobs.release()
 
 
