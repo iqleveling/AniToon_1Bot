@@ -15,7 +15,7 @@ from helper.ffmpeg import convert_media, fix_metadata, get_video_info, inspect_m
 from helper.job_state import Job, jobs
 from helper.large_file import split_file_for_telegram
 from helper.large_video import is_large_video, split_video_for_telegram
-from helper.message_cleanup import protect_message, protect_result
+from helper.message_cleanup import protect_message, protect_result, register_rename_start_prompt
 from helper.plans import get_plan
 from helper.utils import humanbytes, progress_for_pyrogram, reset_progress
 from plugins.rename import _ask_name, _base_without_extension, _extension, _media_from_message, _safe_filename, _user_context
@@ -53,10 +53,8 @@ async def _apply_metadata_settings(job: Job, output_path: str) -> None:
             os.remove(temp)
     except Exception:
         if temp and os.path.exists(temp):
-            try:
-                os.remove(temp)
-            except OSError:
-                pass
+            try: os.remove(temp)
+            except OSError: pass
 
 
 def _video_upload_name(filename: str) -> str:
@@ -119,21 +117,14 @@ async def _send_plain_output(client: Client, job: Job, path: str, filename: str,
     progress = progress_for_pyrogram if status else None
     args = ("Uploading", status, time.time(), job.job_id) if status else None
     caption = await _output_caption(job, filename, os.path.getsize(path))
-    thumb = await db.get_thumbnail(job.user_id)
     if ext == "mp4" or mime == "video/mp4":
         return await _send_video(client, job, path, filename, status)
     if mime.startswith("audio/") or ext in {"mp3", "m4a", "aac", "flac", "ogg", "wav", "opus"}:
         kwargs = {"caption": caption}
-        if thumb:
-            kwargs["thumb"] = thumb
-        if progress:
-            kwargs.update(progress=progress, progress_args=args)
+        if progress: kwargs.update(progress=progress, progress_args=args)
         return await client.send_audio(job.user_id, path, **kwargs)
     kwargs = {"caption": caption}
-    if thumb:
-        kwargs["thumb"] = thumb
-    if progress:
-        kwargs.update(progress=progress, progress_args=args)
+    if progress: kwargs.update(progress=progress, progress_args=args)
     return await client.send_document(job.user_id, path, **kwargs)
 
 
@@ -146,25 +137,21 @@ async def _deliver_output(client: Client, job: Job, path: str, filename: str, st
             sent_messages = []
             for part in parts:
                 sent = await _send_video(client, job, part, os.path.basename(part), status)
-                if not sent:
-                    raise RuntimeError("Telegram returned no video message")
+                if not sent: raise RuntimeError("Telegram returned no video message")
                 await protect_result(sent)
                 await archive_message(client, sent)
                 sent_messages.append(sent)
             return sent_messages
-
     parts = await split_file_for_telegram(path, job.work_dir, filename)
     if len(parts) > 1:
         sent_messages = []
         for part in parts:
             sent = await _send_plain_output(client, job, part, os.path.basename(part), status)
-            if not sent:
-                raise RuntimeError("Telegram returned no message")
+            if not sent: raise RuntimeError("Telegram returned no message")
             await protect_result(sent)
             await archive_message(client, sent)
             sent_messages.append(sent)
         return sent_messages
-
     sent = await _send_plain_output(client, job, path, filename, status)
     if sent:
         await protect_result(sent)
@@ -172,18 +159,66 @@ async def _deliver_output(client: Client, job: Job, path: str, filename: str, st
     return [sent]
 
 
+@Client.on_message(filters.private & (filters.document | filters.video | filters.audio), group=-10000)
+async def repaired_file_download(client: Client, message: Message):
+    """Canonical file-intake handler: show information first; defer all downloading."""
+    user = getattr(message, "from_user", None)
+    if not user:
+        raise StopPropagation
+    user_id = int(user.id)
+    bot_id = int(getattr(client, "bot_id", 0))
+    context, error = await _user_context(user_id, bot_id)
+    if error:
+        await message.reply_text(error)
+        raise StopPropagation
+    user_data, plan, used = context
+    media = _media_from_message(message)
+    if not media:
+        raise StopPropagation
+    expected_size = int(getattr(media, "file_size", 0) or 0)
+    if used + expected_size > plan.daily_limit:
+        await message.reply_text("🚫 **This file exceeds your remaining daily quota.**\n\n" f"Plan: {plan.name}\nRemaining: `{humanbytes(max(plan.daily_limit - used, 0))}`\nFile: `{humanbytes(expected_size)}`")
+        raise StopPropagation
+
+    existing = await jobs.get_user_job(user_id)
+    if existing:
+        await message.reply_text("⏳ **You already have a file job waiting.**\n\nFinish or cancel it before sending another file.")
+        raise StopPropagation
+
+    original_name = _safe_filename(getattr(media, "file_name", None) or f"file_{message.id}")
+    extension = _extension(original_name)
+    mime_type = getattr(media, "mime_type", None) or ""
+    job_id = uuid.uuid4().hex[:12]
+    work_dir = os.path.join("downloads", str(user_id), job_id)
+    os.makedirs(work_dir, exist_ok=True)
+    input_path = os.path.join(work_dir, original_name)
+    job = Job(job_id=job_id, user_id=user_id, bot_id=bot_id, source_message_id=message.id, work_dir=work_dir, input_path=input_path, original_name=original_name, mime_type=mime_type, extra={"extension": extension, "file_id": getattr(media, "file_id", "") or "", "source_message": message, "user_data": user_data, "used_before": used, "telegram_file_size": expected_size})
+    if not await jobs.register(job):
+        shutil.rmtree(work_dir, ignore_errors=True)
+        await message.reply_text("⏳ **You already have a file job waiting.**")
+        raise StopPropagation
+    try:
+        await protect_message(message.chat.id, message.id)
+        from helper.message_cleanup import cleanup_rename_start_prompt
+        await cleanup_rename_start_prompt(client, user_id)
+        status = await message.reply_text("📂 **File Detected**\n" "━━━━━━━━━━━━━━━━━━━━\n" f"📄 **Name**\n`{original_name}`\n" "━━━━━━━━━━━━━━━━━━━━\n" f"📦 **Size**\n`{humanbytes(expected_size)}`\n" "━━━━━━━━━━━━━━━━━━━━\n" f"🎞 **Type**\n`{mime_type or extension or 'unknown'}`\n\n" "Choose an operation before downloading:", reply_markup=file_action_menu(job_id))
+        await jobs.update(job_id, extra={**job.extra, "status_message_id": status.id, "prompt_message_id": status.id})
+    except Exception:
+        shutil.rmtree(work_dir, ignore_errors=True)
+        await jobs.remove(job_id)
+        raise
+    raise StopPropagation
+
+
 @Client.on_callback_query(filters.regex(r"^job:rename:([0-9a-f]+)$"), group=-1000)
 async def rename_entry_fix(client, cb):
     job = await jobs.get(cb.matches[0].group(1))
     if not job or job.user_id != cb.from_user.id:
-        await cb.answer("Job expired or not owned by you.", show_alert=True)
-        raise StopPropagation
+        await cb.answer("Job expired or not owned by you.", show_alert=True); raise StopPropagation
     await cb.answer()
     await jobs.update(job.job_id, selected_action="rename_output_choice", extra={**job.extra, "rename_menu_message_id": cb.message.id})
-    try:
-        await cb.message.edit_text("✏️ **Rename**\n\nChoose how you want the renamed file to be sent:", reply_markup=rename_output_menu(job.job_id))
-    except Exception:
-        pass
+    try: await cb.message.edit_text("✏️ **Rename**\n\nChoose how you want the renamed file to be sent:", reply_markup=rename_output_menu(job.job_id))
+    except Exception: pass
     raise StopPropagation
 
 
@@ -191,13 +226,14 @@ async def rename_entry_fix(client, cb):
 async def rename_output_fix(client, cb):
     job = await jobs.get(cb.matches[0].group(1))
     if not job or job.user_id != cb.from_user.id:
-        await cb.answer("Job expired or not owned by you.", show_alert=True)
-        raise StopPropagation
+        await cb.answer("Job expired or not owned by you.", show_alert=True); raise StopPropagation
     mode = cb.matches[0].group(2)
     await cb.answer()
     await jobs.update(job.job_id, selected_action="custom_name", extra={**job.extra, "rename_output_mode": mode, "rename_menu_message_id": cb.message.id})
     prompt = await _ask_name(client, job.user_id, "✏️ **Rename:**\nSend me the new filename.", job.job_id, "custom_name")
     await jobs.update(job.job_id, extra={**job.extra, "rename_prompt_message_id": prompt.id, "prompt_message_id": prompt.id, "rename_menu_message_id": cb.message.id})
+    try: await cb.message.delete()
+    except Exception: pass
     raise StopPropagation
 
 
@@ -205,16 +241,11 @@ async def rename_output_fix(client, cb):
 async def rename_format_fix(client, cb):
     job = await jobs.get(cb.matches[0].group(1))
     if not job or job.user_id != cb.from_user.id:
-        await cb.answer("Job expired or not owned by you.", show_alert=True)
-        raise StopPropagation
+        await cb.answer("Job expired or not owned by you.", show_alert=True); raise StopPropagation
     mode = cb.matches[0].group(2)
     await cb.answer()
     await jobs.update(job.job_id, extra={**job.extra, "rename_output_mode": mode, "rename_menu_message_id": cb.message.id})
     job.mime_type = "video/mp4" if mode == "video" else "application/octet-stream"
-    try:
-        await cb.message.delete()
-    except Exception:
-        pass
     prompt = await _ask_name(client, job.user_id, "✏️ **Rename:**\nSend me the new filename.", job.job_id, "custom_name")
     await jobs.update(job.job_id, extra={**job.extra, "rename_prompt_message_id": prompt.id, "prompt_message_id": prompt.id})
     raise StopPropagation
@@ -224,26 +255,12 @@ async def rename_format_fix(client, cb):
 async def convert_entry_fix(client, cb):
     job = await jobs.get(cb.matches[0].group(1))
     if not job or job.user_id != cb.from_user.id:
-        await cb.answer("Job expired or not owned by you.", show_alert=True)
-        raise StopPropagation
+        await cb.answer("Job expired or not owned by you.", show_alert=True); raise StopPropagation
     fmt = cb.matches[0].group(2)
     await cb.answer()
     await jobs.update(job.job_id, output_ext=fmt, selected_action="convert_name", mime_type=VIDEO_MIME.get(fmt) or AUDIO_MIME.get(fmt) or "application/octet-stream")
-    try:
-        await cb.message.delete()
-    except Exception:
-        pass
-    prompt = await _ask_name(client, job.user_id, f"✏️ **Rename:**\nSend me the new filename for {fmt.upper()}.", job.job_id, "convert_name")
+    prompt = await _ask_name(client, job.user_id, f"✏️ **Convert to {fmt.upper()}**\n\nSend the new filename.", job.job_id, "convert_name")
     await jobs.update(job.job_id, extra={**job.extra, "rename_prompt_message_id": prompt.id, "prompt_message_id": prompt.id})
-    raise StopPropagation
-
-
-@Client.on_message(filters.private & (filters.document | filters.video | filters.audio), group=-999)
-async def retry_file_when_waiting(client: Client, message: Message):
-    job = await jobs.get_user_job(message.from_user.id)
-    if not job or job.selected_action not in {"rename_format", "custom_name", "convert_name", "rename_output_choice", "convert_menu"}:
-        return
-    shutil.rmtree(job.work_dir, ignore_errors=True)
-    await jobs.remove(job.job_id)
-    await message.reply_text("🔄 **Previous file job cleared. Send the new file again to choose an operation.**")
+    try: await cb.message.delete()
+    except Exception: pass
     raise StopPropagation
