@@ -2,18 +2,25 @@ from __future__ import annotations
 
 import asyncio
 import re
-import types
 from collections import defaultdict
 from typing import Any
 
-# Automatic message deletion is intentionally disabled.
-# Messages remain in the chat unless another part of the bot explicitly deletes them.
+# Cleanup is intentionally scoped. The bot never scans chat history and never
+# deletes arbitrary user/bot messages. Only messages explicitly registered as
+# part of the current rename/convert flow are eligible for automatic deletion.
 _last_user_messages: dict[int, set[int]] = defaultdict(set)
 _last_bot_temporary: dict[int, set[int]] = defaultdict(set)
 _protected: dict[int, set[int]] = defaultdict(set)
 _transfer_messages: dict[int, set[int]] = defaultdict(set)
 _locks: defaultdict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
 _state_lock = asyncio.Lock()
+
+# Per-job flow messages. "transient" messages are safe to remove when the next
+# response arrives. The source file is tracked separately and is removed only
+# after the file has been downloaded and no longer needs Telegram's message.
+_job_transient: dict[str, set[tuple[int, int]]] = defaultdict(set)
+_job_source: dict[str, set[tuple[int, int]]] = defaultdict(set)
+_rename_start_prompts: dict[int, set[tuple[int, int]]] = defaultdict(set)
 
 _COMMAND_RE = re.compile(r"^/[A-Za-z0-9_]+(?:@\w+)?(?:\s|$)")
 _TRANSFER_TEXT_RE = re.compile(
@@ -36,17 +43,13 @@ def _looks_like_transfer_status(message: Any) -> bool:
 
 
 async def delete_messages(client, chat_id, message_ids=None):
-    ids = [int(x) for x in (message_ids or []) if x]
-    if not ids:
-        return
-    try:
-        await client.delete_messages(chat_id, ids)
-    except Exception:
-        for message_id in ids:
-            try:
-                await client.delete_messages(chat_id, message_id)
-            except Exception:
-                pass
+    # Delete individually on purpose: this is a scoped cleanup feature, not a
+    # bulk-history deletion tool.
+    for message_id in [int(x) for x in (message_ids or []) if x]:
+        try:
+            await client.delete_messages(chat_id, message_id)
+        except Exception:
+            pass
 
 
 async def protect_message(chat_id: int, message_id: int | None):
@@ -71,7 +74,8 @@ async def protect_transfer_message(message: Any):
 
 
 async def delete_transfer_message(client, message: Any):
-    # Compatibility API only. Transfer messages are intentionally never deleted here.
+    # Compatibility API: transfer messages stay visible until the transfer
+    # pipeline itself decides the job has succeeded.
     if message is None:
         return
     await protect_transfer_message(message)
@@ -91,25 +95,100 @@ async def protect_start_page(message: Any):
     await protect_result(message)
 
 
+async def register_job_message(job_id: str, message: Any, *, source: bool = False) -> None:
+    if not job_id or message is None:
+        return
+    chat_id = getattr(getattr(message, "chat", None), "id", None)
+    message_id = getattr(message, "id", None)
+    if not chat_id or not message_id:
+        return
+    item = (int(chat_id), int(message_id))
+    bucket = _job_source if source else _job_transient
+    async with _state_lock:
+        bucket[str(job_id)].add(item)
+
+
+async def register_rename_start_prompt(user_id: int, message: Any) -> None:
+    if message is None:
+        return
+    chat_id = getattr(getattr(message, "chat", None), "id", None)
+    message_id = getattr(message, "id", None)
+    if not chat_id or not message_id:
+        return
+    async with _state_lock:
+        _rename_start_prompts[int(user_id)].add((int(chat_id), int(message_id)))
+
+
+async def cleanup_rename_start_prompt(client, user_id: int) -> None:
+    async with _state_lock:
+        items = list(_rename_start_prompts.pop(int(user_id), set()))
+    for chat_id, message_id in items:
+        await delete_messages(client, chat_id, [message_id])
+
+
+async def cleanup_job_transient(client, job_id: str, *, keep_message_id: int | None = None) -> None:
+    if not job_id:
+        return
+    async with _state_lock:
+        items = list(_job_transient.pop(str(job_id), set()))
+    keep = int(keep_message_id) if keep_message_id else None
+    remaining = []
+    for chat_id, message_id in items:
+        if keep is not None and message_id == keep:
+            remaining.append((chat_id, message_id))
+            continue
+        await delete_messages(client, chat_id, [message_id])
+    if remaining:
+        async with _state_lock:
+            _job_transient[str(job_id)].update(remaining)
+
+
+async def cleanup_job_source(client, job_id: str) -> None:
+    if not job_id:
+        return
+    async with _state_lock:
+        items = list(_job_source.pop(str(job_id), set()))
+    for chat_id, message_id in items:
+        await delete_messages(client, chat_id, [message_id])
+
+
+async def clear_job_cleanup(job_id: str) -> None:
+    if not job_id:
+        return
+    async with _state_lock:
+        _job_transient.pop(str(job_id), None)
+        _job_source.pop(str(job_id), None)
+
+
+async def prepare_incoming_message_cleanup(client, message: Any) -> None:
+    """Delete only the current user's active rename-flow prompts before processing the new reply."""
+    if message is None or not getattr(message, "from_user", None):
+        return
+    user_id = int(message.from_user.id)
+    # A /command is never treated as a rename-flow answer.
+    if _is_command(message):
+        return
+    try:
+        from helper.job_state import jobs
+        job = await jobs.get_user_job(user_id)
+    except Exception:
+        job = None
+    if job and getattr(job, "selected_action", None) in {
+        "rename_output_choice", "rename_format", "custom_name", "convert_name"
+    }:
+        await cleanup_job_transient(client, job.job_id)
+
+
 async def delete_user_job_messages(client, chat_id: int, message_ids):
     """Compatibility API for callers that explicitly request job-input deletion."""
     ids = [int(x) for x in (message_ids or []) if x]
     if not ids:
         return
-    # Automatic cleanup is disabled, but this explicit helper preserves its
-    # historical behavior for code that intentionally invokes it.
-    async with _state_lock:
-        protected = _protected.get(int(chat_id), set())
-        transfer = _transfer_messages.get(int(chat_id), set())
-        for message_id in ids:
-            protected.discard(message_id)
-            transfer.discard(message_id)
-        _last_user_messages[int(chat_id)].difference_update(ids)
     await delete_messages(client, int(chat_id), ids)
 
 
 async def remember_user_message(message: Any, message_id: int | None = None):
-    """Record message state without scheduling anything for automatic deletion."""
+    """Record state only; automatic deletion is handled exclusively by the scoped job registry."""
     if message_id is None:
         message_id = getattr(message, "id", None)
     chat_id = getattr(getattr(message, "chat", None), "id", None)
@@ -123,25 +202,11 @@ async def remember_user_message(message: Any, message_id: int | None = None):
 
 
 async def remember_bot_temporary(chat_id: int, result: Any):
-    results = result if isinstance(result, (list, tuple)) else [result]
-    async with _state_lock:
-        protected = _protected[int(chat_id)]
-        transfer = _transfer_messages[int(chat_id)]
-        for item in results:
-            message_id = getattr(item, "id", None)
-            if not message_id:
-                continue
-            if int(message_id) in protected or int(message_id) in transfer:
-                continue
-            if _is_command(item) or _looks_like_transfer_status(item):
-                protected.add(int(message_id))
-                if _looks_like_transfer_status(item):
-                    transfer.add(int(message_id))
-                continue
-            _last_bot_temporary[int(chat_id)].add(int(message_id))
+    # Compatibility only. Do not classify arbitrary bot messages as deletable.
+    return None
 
 
-async def clear_last_cycle(client, user_id: int):
+async def clear_last_cycle(user_id: int):
     return None
 
 
@@ -150,7 +215,7 @@ async def remember_cycle(user_id: int, *message_ids: int | None):
 
 
 async def _cleanup_before_new_bot_message(client, chat_id: int):
-    # Intentionally disabled. Kept as a compatibility function for existing imports.
+    # Intentionally disabled globally. Flow cleanup is job-scoped instead.
     return None
 
 
@@ -163,6 +228,6 @@ _AUTOCLEAN_METHODS = (
 
 
 def install_auto_cleanup(client):
-    """Compatibility hook: automatic message deletion is completely disabled."""
-    client._anitoon_auto_cleanup = False
+    """Enable only the scoped flow-cleanup bootstrap; never patch Telegram send methods."""
+    client._anitoon_auto_cleanup = True
     return None
