@@ -9,15 +9,8 @@ def force_sub_menu():
 
 
 def main_menu(is_main_bot: bool = True, is_owner: bool = False):
-    rows = [
-        [InlineKeyboardButton("🛠 Help", callback_data="help"), InlineKeyboardButton("⚙️ Settings", callback_data="settings")],
-        [InlineKeyboardButton("✏️ Rename", callback_data="start_rename"), InlineKeyboardButton("🔄 Convert", callback_data="start_convert")],
-    ]
-    if is_main_bot:
-        rows.append([InlineKeyboardButton("🤖 Create Your Own Clone Bot", callback_data="create_clone")])
-    if is_main_bot and is_owner:
-        rows.append([InlineKeyboardButton("👑 Owner Panel", callback_data="owner:panel")])
-    return InlineKeyboardMarkup(rows)
+    """Minimal home screen: Rename is the primary entry point."""
+    return InlineKeyboardMarkup([[InlineKeyboardButton("✏️ Rename", callback_data="start_rename")]])
 
 
 def settings_menu():
@@ -38,9 +31,8 @@ def thumbnail_menu():
 
 def file_action_menu(job_id: str):
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("✏️ Rename", callback_data=f"job:rename:{job_id}"), InlineKeyboardButton("🤖 Auto Rename", callback_data=f"job:auto:{job_id}")],
-        [InlineKeyboardButton("🔄 Convert", callback_data=f"job:convert:{job_id}"), InlineKeyboardButton("🛠 Advanced", callback_data=f"job:advanced:{job_id}")],
-        [InlineKeyboardButton("❌ Cancel", callback_data=f"transfer:cancel:{job_id}")],
+        [InlineKeyboardButton("✏️ Rename", callback_data=f"job:rename:{job_id}"), InlineKeyboardButton("🛠 Advanced", callback_data=f"job:advanced:{job_id}")],
+        [InlineKeyboardButton("❌ Cancel", callback_data=f"job:cancel:{job_id}")],
     ])
 
 
@@ -49,7 +41,7 @@ def rename_format_menu(job_id: str):
 
 
 def rename_output_menu(job_id: str):
-    return InlineKeyboardMarkup([[InlineKeyboardButton("📄 Convert into File", callback_data=f"renameoutput:{job_id}:file"), InlineKeyboardButton("🎬 Convert into Video", callback_data=f"renameoutput:{job_id}:video")], [InlineKeyboardButton("❌ Cancel", callback_data=f"transfer:cancel:{job_id}")]])
+    return InlineKeyboardMarkup([[InlineKeyboardButton("📄 Convert into File", callback_data=f"renameoutput:{job_id}:file"), InlineKeyboardButton("🎬 Convert into Video", callback_data=f"renameoutput:{job_id}:video")], [InlineKeyboardButton("❌ Cancel", callback_data=f"job:cancel:{job_id}")]])
 
 
 def auto_preview_menu(job_id: str):
