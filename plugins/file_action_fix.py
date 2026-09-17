@@ -2,58 +2,24 @@ from __future__ import annotations
 
 import os
 import shutil
-import time
 import uuid
 
 from pyrogram import Client, StopPropagation, filters
-from pyrogram.errors import RPCError
 from pyrogram.types import Message
 
 from helper.archive_result import archive_message
 from helper.database import db
-from helper.ffmpeg import fix_metadata, get_video_info, inspect_media_streams, prepare_video_for_telegram
+from helper.ffmpeg import get_video_info, prepare_video_for_telegram
 from helper.job_transfer import upload_job
 from helper.large_file import split_file_for_telegram
 from helper.large_video import is_large_video, split_video_for_telegram
 from helper.job_state import Job, jobs
 from helper.message_cleanup import protect_message, protect_result
-from helper.utils import humanbytes, progress_for_pyrogram, reset_progress
+from helper.utils import humanbytes, reset_progress
 from plugins.rename import _ask_name, _base_without_extension, _extension, _media_from_message, _safe_filename, _user_context
 from plugins.ui import file_action_menu, rename_output_menu
 
-VIDEO_MIME = {"mp4": "video/mp4", "mkv": "video/x-matroska", "webm": "video/webm", "mov": "video/quicktime"}
-AUDIO_MIME = {"mp3": "audio/mpeg", "m4a": "audio/mp4"}
 VIDEO_EXTENSIONS = {"mp4", "mkv", "webm", "mov", "avi", "flv", "ts", "m4v"}
-
-
-async def _output_caption(job: Job, filename: str, size: int, duration: float = 0) -> str:
-    saved = await db.get_caption(job.user_id)
-    if saved:
-        return str(saved).replace("{filename}", filename).replace("{filesize}", humanbytes(size)).replace("{duration}", str(int(duration)))
-    return f"✅ **AniToon Processed**\n\n📂 `{filename}`\n📦 `{humanbytes(size)}`"
-
-
-async def _apply_metadata_settings(job: Job, output_path: str) -> None:
-    if not os.path.isfile(output_path) or (_extension(output_path) not in VIDEO_EXTENSIONS and not str(job.mime_type or "").startswith("video/")):
-        return
-    temp = None
-    try:
-        streams = await inspect_media_streams(output_path)
-        if not any(item["type"] in {"audio", "subtitle"} for item in streams):
-            return
-        from helper.metadata import get_metadata
-        settings = await get_metadata(job.user_id)
-        temp = os.path.join(job.work_dir, ".metadata_applied." + os.path.basename(output_path))
-        if await fix_metadata(output_path, temp, settings.audio_name, settings.subtitle_name) and os.path.isfile(temp) and os.path.getsize(temp) > 0:
-            os.replace(temp, output_path)
-        elif temp and os.path.exists(temp):
-            os.remove(temp)
-    except Exception:
-        if temp and os.path.exists(temp):
-            try:
-                os.remove(temp)
-            except OSError:
-                pass
 
 
 def _video_upload_name(filename: str) -> str:
@@ -72,8 +38,22 @@ async def _prepare_video(job: Job, path: str, filename: str):
     return upload_path, upload_name, duration, width, height
 
 
+async def _show_upload_start(status: Message | None, filename: str):
+    if status is None:
+        return
+    try:
+        await status.edit_text(
+            f"📤 **Uploading**\n\n📂 `{filename}`\n\n⚡ Preparing Telegram upload..."
+        )
+    except Exception:
+        pass
+
+
 async def _send_video(client: Client, job: Job, path: str, filename: str, status: Message | None = None):
-    upload_path, upload_name, duration, width, height = await _prepare_video(job, path, filename)
+    # Do not leave the user looking at a completed download while FFmpeg/ffprobe
+    # prepares the upload. Compatible MP4/H264/AAC files take the fast-copy path.
+    await _show_upload_start(status, filename)
+    upload_path, upload_name, _duration, _width, _height = await _prepare_video(job, path, filename)
     try:
         result = await upload_job(client, job, upload_path, upload_name, status, as_video=True)
         if not result:
@@ -93,6 +73,7 @@ async def _send_plain_output(client: Client, job: Job, path: str, filename: str,
     ext, mime = _extension(filename), job.mime_type or ""
     if ext == "mp4" or mime == "video/mp4":
         return await _send_video(client, job, path, filename, status)
+    await _show_upload_start(status, filename)
     result = await upload_job(client, job, path, filename, status, as_video=False)
     if not result:
         raise RuntimeError("Telegram returned no uploaded result")
@@ -100,8 +81,10 @@ async def _send_plain_output(client: Client, job: Job, path: str, filename: str,
 
 
 async def _deliver_output(client: Client, job: Job, path: str, filename: str, status: Message | None = None):
-    if (job.mime_type or "").startswith("video/") or _extension(filename) in VIDEO_EXTENSIONS:
-        await _apply_metadata_settings(job, path)
+    # Rename-only must not perform an unnecessary metadata remux immediately
+    # before upload. That remux was the main source of the apparent pause at
+    # 100% download. Advanced metadata operations remain handled by their own
+    # processing pipeline.
     if _extension(filename) == "mp4" or (job.mime_type or "") == "video/mp4":
         if is_large_video(path):
             parts = await split_video_for_telegram(path, job.work_dir, filename)
@@ -129,7 +112,11 @@ async def repaired_file_download(client: Client, message: Message):
         raise StopPropagation
     expected_size = int(getattr(media, "file_size", 0) or 0)
     if used + expected_size > plan.daily_limit:
-        await message.reply_text("🚫 **This file exceeds your remaining daily quota.**\n\n" f"Plan: {plan.name}\nRemaining: `{humanbytes(max(plan.daily_limit - used, 0))}`\nFile: `{humanbytes(expected_size)}`")
+        await message.reply_text(
+            "🚫 **This file exceeds your remaining daily quota.**\n\n"
+            f"Plan: {plan.name}\nRemaining: `{humanbytes(max(plan.daily_limit - used, 0))}`\n"
+            f"File: `{humanbytes(expected_size)}`"
+        )
         raise StopPropagation
 
     original_name = _safe_filename(getattr(media, "file_name", None) or f"file_{message.id}")
@@ -137,7 +124,24 @@ async def repaired_file_download(client: Client, message: Message):
     job_id = uuid.uuid4().hex[:12]
     work_dir = os.path.join("downloads", str(user_id), job_id)
     os.makedirs(work_dir, exist_ok=True)
-    job = Job(job_id=job_id, user_id=user_id, bot_id=bot_id, source_message_id=message.id, work_dir=work_dir, input_path=os.path.join(work_dir, original_name), original_name=original_name, mime_type=mime_type, extra={"extension": extension, "file_id": getattr(media, "file_id", "") or "", "source_message": message, "user_data": user_data, "used_before": used, "telegram_file_size": expected_size})
+    job = Job(
+        job_id=job_id,
+        user_id=user_id,
+        bot_id=bot_id,
+        source_message_id=message.id,
+        work_dir=work_dir,
+        input_path=os.path.join(work_dir, original_name),
+        original_name=original_name,
+        mime_type=mime_type,
+        extra={
+            "extension": extension,
+            "file_id": getattr(media, "file_id", "") or "",
+            "source_message": message,
+            "user_data": user_data,
+            "used_before": used,
+            "telegram_file_size": expected_size,
+        },
+    )
     if not await jobs.register(job):
         shutil.rmtree(work_dir, ignore_errors=True)
         await message.reply_text("❌ Could not add this file to the queue.")
@@ -145,8 +149,15 @@ async def repaired_file_download(client: Client, message: Message):
     try:
         all_jobs = await jobs.get_user_jobs(user_id)
         queue_position = len(all_jobs)
-        queue_text = "\n\n📋 **Queue position:** `#%d`" % queue_position if queue_position > 1 else ""
-        status = await message.reply_text("📂 **File Information**\n\n" f"📄 **Name:** `{original_name}`\n" f"📦 **Size:** `{humanbytes(expected_size)}`\n" f"🎞 **Type:** `{mime_type or extension or 'unknown'}`{queue_text}\n\n" "Choose an operation:", reply_markup=file_action_menu(job_id))
+        queue_text = f"\n\n📋 **Queue position:** `#{queue_position}`" if queue_position > 1 else ""
+        status = await message.reply_text(
+            "📂 **File Information**\n\n"
+            f"📄 **Name:** `{original_name}`\n"
+            f"📦 **Size:** `{humanbytes(expected_size)}`\n"
+            f"🎞 **Type:** `{mime_type or extension or 'unknown'}`{queue_text}\n\n"
+            "Choose an operation:",
+            reply_markup=file_action_menu(job_id),
+        )
         await jobs.update(job_id, extra={**job.extra, "status_message_id": status.id})
     except Exception:
         shutil.rmtree(work_dir, ignore_errors=True)
