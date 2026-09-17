@@ -31,9 +31,9 @@ class JobManager:
     def __init__(self, max_active: int = 20):
         self.max_active = max(1, int(max_active))
         self._semaphore = asyncio.Semaphore(self.max_active)
+        self._pipeline_lock = asyncio.Lock()
         self._jobs: dict[str, Job] = {}
         self._user_jobs: dict[int, list[str]] = {}
-        self._user_locks: dict[int, asyncio.Lock] = {}
         self._lock = asyncio.Lock()
 
     async def register(self, job: Job) -> bool:
@@ -42,7 +42,6 @@ class JobManager:
             user_id = int(job.user_id)
             self._jobs[job.job_id] = job
             self._user_jobs.setdefault(user_id, []).append(job.job_id)
-            self._user_locks.setdefault(user_id, asyncio.Lock())
             return True
 
     async def get(self, job_id: str) -> Job | None:
@@ -86,7 +85,6 @@ class JobManager:
                 self._user_jobs[job.user_id] = queue
             else:
                 self._user_jobs.pop(job.user_id, None)
-                self._user_locks.pop(job.user_id, None)
 
     async def position(self, job_id: str) -> int:
         """Return FIFO position among jobs that have selected an action."""
@@ -115,8 +113,8 @@ class JobManager:
                 return 0
 
     async def user_lock(self, user_id: int) -> asyncio.Lock:
-        async with self._lock:
-            return self._user_locks.setdefault(int(user_id), asyncio.Lock())
+        """Compatibility API: all named jobs share one global FIFO pipeline lock."""
+        return self._pipeline_lock
 
     async def acquire(self):
         await self._semaphore.acquire()
