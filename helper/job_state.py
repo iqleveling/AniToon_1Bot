@@ -28,10 +28,12 @@ class Job:
 
 
 class JobManager:
-    def __init__(self, max_active: int = 20):
+    def __init__(self, max_active: int = 100):
         self.max_active = max(1, int(max_active))
         self._semaphore = asyncio.Semaphore(self.max_active)
-        self._pipeline_lock = asyncio.Lock()
+        # A separate lock per user prevents one user's jobs from racing each
+        # other, without serializing unrelated users globally.
+        self._user_locks: dict[int, asyncio.Lock] = {}
         self._jobs: dict[str, Job] = {}
         self._user_jobs: dict[int, list[str]] = {}
         self._lock = asyncio.Lock()
@@ -41,6 +43,7 @@ class JobManager:
             user_id = int(job.user_id)
             self._jobs[job.job_id] = job
             self._user_jobs.setdefault(user_id, []).append(job.job_id)
+            self._user_locks.setdefault(user_id, asyncio.Lock())
             return True
 
     async def get(self, job_id: str) -> Job | None:
@@ -48,7 +51,6 @@ class JobManager:
             return self._jobs.get(job_id)
 
     async def get_all_jobs(self) -> list[Job]:
-        """Return a snapshot of every live job without exposing internal state."""
         async with self._lock:
             return list(self._jobs.values())
 
@@ -89,6 +91,7 @@ class JobManager:
                 self._user_jobs[job.user_id] = queue
             else:
                 self._user_jobs.pop(job.user_id, None)
+                self._user_locks.pop(job.user_id, None)
 
     async def position(self, job_id: str) -> int:
         async with self._lock:
@@ -105,7 +108,6 @@ class JobManager:
         return 0
 
     async def user_queue_position(self, job_id: str) -> int:
-        """Return the number of earlier active jobs. First waiting job is #1."""
         async with self._lock:
             job = self._jobs.get(job_id)
             if not job:
@@ -123,7 +125,8 @@ class JobManager:
             return earlier
 
     async def user_lock(self, user_id: int) -> asyncio.Lock:
-        return self._pipeline_lock
+        async with self._lock:
+            return self._user_locks.setdefault(int(user_id), asyncio.Lock())
 
     async def acquire(self):
         await self._semaphore.acquire()
