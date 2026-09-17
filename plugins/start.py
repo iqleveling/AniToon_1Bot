@@ -125,13 +125,23 @@ async def _check_one_channel(client: Client, user_id: int, channel: dict):
     try:
         member = await client.get_chat_member(chat_id=channel["chat"], user_id=user_id)
         status = _normalize_status(getattr(member, "status", None))
-        if status in {"owner", "administrator", "member", "restricted"}:
+        if status in {"owner", "administrator", "member"}:
             if str(channel.get("chat")) == str(PRIVATE_FORCE_SUB_CHAT_ID):
                 try:
                     await db.clear_force_sub_request(user_id, PRIVATE_FORCE_SUB_CHAT_ID)
                 except Exception:
                     pass
             return True
+        if status == "restricted":
+            is_member = getattr(member, "is_member", None)
+            if is_member is True:
+                if str(channel.get("chat")) == str(PRIVATE_FORCE_SUB_CHAT_ID):
+                    try:
+                        await db.clear_force_sub_request(user_id, PRIVATE_FORCE_SUB_CHAT_ID)
+                    except Exception:
+                        pass
+                return True
+            return False
         if status in {"left", "kicked", "banned"}:
             return False
         return None
@@ -145,10 +155,7 @@ async def _check_one_channel(client: Client, user_id: int, channel: dict):
 async def get_force_sub_status(client: Client, user_id: int):
     """Return membership status and ONLY list channels the user has not joined."""
     checker = _force_sub_client(client)
-    channels = _configured_force_sub_channels()
     await _ensure_private_force_sub_link(checker)
-
-    # Refresh the local channel list after private-invite generation.
     channels = _configured_force_sub_channels()
     results = await asyncio.gather(
         *[_check_one_channel(checker, user_id, channel) for channel in channels]
@@ -161,10 +168,8 @@ async def get_force_sub_status(client: Client, user_id: int):
         if result is True:
             joined_count += 1
         elif result is False:
-            # A button is shown ONLY when Telegram confirmed the user is not a member.
             missing_channels.append(channel)
         else:
-            # Verification errors are not treated as proof that the user needs to join.
             failed_channels.append(channel)
 
     return joined_count, missing_channels, failed_channels
@@ -232,7 +237,7 @@ async def send_force_sub_message(client: Client, message: Message):
         return True
     await message.reply_text(
         make_force_sub_text(joined_count, len(missing_channels), len(failed_channels)),
-        reply_markup=make_force_sub_keyboard(missing_channels, failed_channels),
+        reply_markup=make_force_sub_keyboard(missing_channels),
     )
     return False
 
@@ -261,7 +266,7 @@ async def start(client: Client, message: Message):
         if missing_channels or failed_channels:
             await message.reply_text(
                 make_force_sub_text(joined_count, len(missing_channels), len(failed_channels)),
-                reply_markup=make_force_sub_keyboard(missing_channels, failed_channels),
+                reply_markup=make_force_sub_keyboard(missing_channels),
             )
             return
 
