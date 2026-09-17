@@ -37,7 +37,6 @@ class JobManager:
         self._lock = asyncio.Lock()
 
     async def register(self, job: Job) -> bool:
-        """Register every submitted job so additional files can wait in queue."""
         async with self._lock:
             user_id = int(job.user_id)
             self._jobs[job.job_id] = job
@@ -87,7 +86,6 @@ class JobManager:
                 self._user_jobs.pop(job.user_id, None)
 
     async def position(self, job_id: str) -> int:
-        """Return FIFO position among jobs that have selected an action."""
         async with self._lock:
             job = self._jobs.get(job_id)
             if not job:
@@ -102,18 +100,24 @@ class JobManager:
         return 0
 
     async def user_queue_position(self, job_id: str) -> int:
+        """Return the number of earlier active jobs. First waiting job is #1."""
         async with self._lock:
             job = self._jobs.get(job_id)
             if not job:
                 return 0
             ids = self._user_jobs.get(job.user_id, [])
             try:
-                return ids.index(job_id) + 1
+                index = ids.index(job_id)
             except ValueError:
                 return 0
+            earlier = 0
+            for prior_id in ids[:index]:
+                prior = self._jobs.get(prior_id)
+                if prior and prior.active and prior.selected_action:
+                    earlier += 1
+            return earlier
 
     async def user_lock(self, user_id: int) -> asyncio.Lock:
-        """Compatibility API: all named jobs share one global FIFO pipeline lock."""
         return self._pipeline_lock
 
     async def acquire(self):
