@@ -94,6 +94,25 @@ async def repaired_file_download(client: Client, message: Message):
     if not user:
         raise StopPropagation
     user_id, bot_id = int(user.id), int(getattr(client, "bot_id", 0))
+
+    # Force-sub is checked at the actual file-entry point as well as /start.
+    # This prevents users who left the private channel from bypassing the gate
+    # by sending a file directly or using an older inline keyboard.
+    try:
+        from plugins.start import get_force_sub_status, make_force_sub_text, make_force_sub_keyboard
+        joined_count, missing_channels, failed_channels = await get_force_sub_status(client, user_id)
+        if joined_count != 4 or missing_channels or failed_channels:
+            await message.reply_text(
+                make_force_sub_text(joined_count, len(missing_channels), len(failed_channels)),
+                reply_markup=make_force_sub_keyboard(missing_channels, failed_channels),
+            )
+            raise StopPropagation
+    except StopPropagation:
+        raise
+    except Exception:
+        await message.reply_text("⚠️ **Channel verification failed.** Please try again in a moment.")
+        raise StopPropagation
+
     context, error = await _user_context(user_id, bot_id)
     if error:
         await message.reply_text(error)
