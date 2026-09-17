@@ -95,16 +95,13 @@ async def repaired_file_download(client: Client, message: Message):
         raise StopPropagation
     user_id, bot_id = int(user.id), int(getattr(client, "bot_id", 0))
 
-    # Force-sub is checked at the actual file-entry point as well as /start.
-    # This prevents users who left the private channel from bypassing the gate
-    # by sending a file directly or using an older inline keyboard.
     try:
-        from plugins.start import get_force_sub_status, make_force_sub_text, make_force_sub_keyboard
+        from plugins.start import get_force_sub_status, make_force_sub_text, make_force_sub_keyboard, _configured_force_sub_channels
         joined_count, missing_channels, failed_channels = await get_force_sub_status(client, user_id)
-        if joined_count != 4 or missing_channels or failed_channels:
+        if missing_channels or failed_channels or joined_count != len(_configured_force_sub_channels()):
             await message.reply_text(
                 make_force_sub_text(joined_count, len(missing_channels), len(failed_channels)),
-                reply_markup=make_force_sub_keyboard(missing_channels, failed_channels),
+                reply_markup=make_force_sub_keyboard(missing_channels),
             )
             raise StopPropagation
     except StopPropagation:
