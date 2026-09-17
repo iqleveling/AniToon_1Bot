@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
+import struct
 import time
 
 from pyrogram import Client
@@ -36,6 +37,49 @@ async def _delete_rename_source(client: Client, job: Job) -> None:
         pass
 
 
+def _needs_faststart(path: str) -> bool:
+    """Return True only when MP4 has media data before its movie header.
+
+    This avoids an FFmpeg pass for already-streamable MP4 files. If moov is
+    after mdat, one lossless stream-copy remux is required before Telegram can
+    start playback efficiently.
+    """
+    if not path.lower().endswith(".mp4"):
+        return False
+    try:
+        with open(path, "rb") as stream:
+            offset = 0
+            saw_mdat = False
+            for _ in range(256):
+                stream.seek(offset)
+                header = stream.read(8)
+                if len(header) < 8:
+                    return False
+                size, atom = struct.unpack(">I4s", header)
+                atom = atom.decode("latin1")
+                header_size = 8
+                if size == 1:
+                    extended = stream.read(8)
+                    if len(extended) < 8:
+                        return False
+                    size = struct.unpack(">Q", extended)[0]
+                    header_size = 16
+                elif size == 0:
+                    return False
+                if size < header_size:
+                    return False
+                if atom == "mdat":
+                    saw_mdat = True
+                elif atom == "moov":
+                    return saw_mdat
+                offset += size
+                if offset > os.path.getsize(path):
+                    return False
+    except (OSError, ValueError, struct.error):
+        return False
+    return False
+
+
 async def download_job(client: Client, message: Message, job: Job, status: Message) -> int:
     if os.path.isfile(job.input_path) and os.path.getsize(job.input_path) > 0:
         actual = os.path.getsize(job.input_path)
@@ -48,8 +92,6 @@ async def download_job(client: Client, message: Message, job: Job, status: Messa
     source = job.extra.get("source_message") or job.extra.get("file_id") or message
     os.makedirs(job.work_dir, exist_ok=True)
 
-    # Telegram already provides the source video's duration in the media object.
-    # Set it before the first progress update so runtime is visible from 0%.
     media = getattr(source, "video", None) or getattr(source, "document", None)
     duration = getattr(media, "duration", None) if media is not None else None
     if duration:
@@ -108,25 +150,36 @@ async def download_job(client: Client, message: Message, job: Job, status: Messa
 
 
 async def upload_job(client: Client, job: Job, path: str, filename: str, status: Message | None = None, *, as_video: bool = False):
-    """Upload a file. Videos are sent directly with Telegram's video player enabled."""
+    """Upload a file; videos use Telegram's native streamable video message."""
     if not os.path.isfile(path) or os.path.getsize(path) <= 0:
         raise RuntimeError("Upload source is missing or empty")
     acquired = False
     task = await register_task(job.job_id)
+    upload_path = path
+    temporary_streamable = None
     try:
         await jobs.acquire()
         acquired = True
         reset_progress(job.job_id)
         started = time.time()
-        size = os.path.getsize(path)
+
+        # Only remux when the MP4 is actually laid out for non-streamable use.
+        # This is lossless (-c copy) and is skipped for normal fast-start MP4s.
+        if as_video and _needs_faststart(path):
+            from helper.ffmpeg import make_streamable
+            temporary_streamable = os.path.join(job.work_dir, f".streamable_{job.job_id}.mp4")
+            prepared = await make_streamable(path, temporary_streamable)
+            if prepared and os.path.isfile(prepared):
+                upload_path = prepared
+
+        size = os.path.getsize(upload_path)
         kwargs = {
             "progress": progress_for_pyrogram,
             "progress_args": ("Uploading", status, started, job.job_id),
         }
-
         if as_video:
             from helper.ffmpeg import get_video_info
-            duration, width, height = await get_video_info(path)
+            duration, width, height = await get_video_info(upload_path)
             if duration <= 0 or width <= 0 or height <= 0:
                 raise RuntimeError("Video metadata could not be read before upload")
             set_transfer_runtime(job.job_id, duration)
@@ -146,20 +199,25 @@ async def upload_job(client: Client, job: Job, path: str, filename: str, status:
             if thumb:
                 kwargs["thumb"] = thumb
             try:
-                return await client.send_video(job.user_id, path, **kwargs)
+                return await client.send_video(job.user_id, upload_path, **kwargs)
             except Exception as exc:
                 if thumb and "thumb" in str(exc).lower():
                     kwargs.pop("thumb", None)
-                    return await client.send_video(job.user_id, path, **kwargs)
+                    return await client.send_video(job.user_id, upload_path, **kwargs)
                 raise RuntimeError(f"Telegram video upload failed: {exc}") from exc
 
         kwargs["caption"] = f"✅ **AniToon Processed**\n\n📂 `{filename}`\n📦 `{humanbytes(size)}`"
         ext = os.path.splitext(filename)[1].lower()
         mime = (job.mime_type or "").lower()
         if mime.startswith("audio/") or ext in {".mp3", ".m4a", ".aac", ".flac", ".ogg", ".wav", ".opus"}:
-            return await client.send_audio(job.user_id, path, **kwargs)
-        return await client.send_document(job.user_id, path, **kwargs)
+            return await client.send_audio(job.user_id, upload_path, **kwargs)
+        return await client.send_document(job.user_id, upload_path, **kwargs)
     finally:
+        if temporary_streamable and temporary_streamable != path:
+            try:
+                os.remove(temporary_streamable)
+            except OSError:
+                pass
         await unregister_task(job.job_id, task)
         if acquired:
             jobs.release()
