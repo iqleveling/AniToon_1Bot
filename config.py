@@ -11,6 +11,7 @@ class Config:
     ARCHIVE_CHANNEL_ID = int(os.getenv("ARCHIVE_CHANNEL_ID", "-1004491486679"))
     FORCE_SUB = os.getenv("FORCE_SUB", "").strip()
     FORCE_SUB_LINKS = os.getenv("FORCE_SUB_LINKS", "").strip()
+    FORCE_SUB_PRIVATE_LINK = os.getenv("FORCE_SUB_PRIVATE_LINK", "").strip()
     IS_CLONE_ALLOWED = os.getenv("IS_CLONE_ALLOWED", "true").lower() in {"true", "1", "yes", "on"}
     ADMIN = [int(x) for x in os.getenv("ADMIN", "").split() if x.strip().isdigit()]
     OWNER_ID = int(os.getenv("OWNER_ID", "0"))
