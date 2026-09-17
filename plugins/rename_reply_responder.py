@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
-import time
 
 from pyrogram import Client, StopPropagation, filters
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
@@ -21,9 +20,22 @@ from plugins.rename import _base_without_extension, _extension, _safe_filename
 NAME_ACTIONS = {"custom_name", "convert_name"}
 
 
-async def _find_name_job(user_id: int):
-    for job in await jobs.get_user_jobs(user_id):
-        if getattr(job, "selected_action", None) in NAME_ACTIONS:
+async def _find_name_job(user_id: int, message=None):
+    jobs_for_user = await jobs.get_user_jobs(user_id)
+
+    # If Telegram supplied a ForceReply target, bind the filename to the exact
+    # prompt/job. This prevents filename #2 from accidentally being consumed by
+    # file #1 while file #1 is uploading.
+    reply_id = getattr(getattr(message, "reply_to_message", None), "id", None) if message else None
+    if reply_id:
+        for job in jobs_for_user:
+            if getattr(job, "selected_action", None) in NAME_ACTIONS and not job.extra.get("name_submitted"):
+                if int((job.extra or {}).get("rename_prompt_message_id", 0) or 0) == int(reply_id):
+                    return job
+
+    # Otherwise take the first named job that has not already consumed a name.
+    for job in jobs_for_user:
+        if getattr(job, "selected_action", None) in NAME_ACTIONS and not job.extra.get("name_submitted"):
             return job
     return None
 
@@ -100,7 +112,7 @@ async def _convert_rename_to_video(job, name: str, status):
 
 
 async def _process_named_job(client, message, job):
-    """Process exactly one named job. The caller holds the user's FIFO lock."""
+    """Process exactly one named job. The caller holds the global FIFO lock."""
     action = job.selected_action
     text = message.text.strip()
     if action == "convert_name":
@@ -123,20 +135,14 @@ async def _process_named_job(client, message, job):
             await db.update_usage(job.user_id, job.bot_id, size)
             await _finish_delivery(client, message, job, status)
         except AniToonTransferCancelled:
-            try:
-                await status.edit_text("❌ **Processing cancelled.**")
-            except Exception:
-                pass
+            try: await status.edit_text("❌ **Processing cancelled.**")
+            except Exception: pass
         except asyncio.CancelledError:
-            try:
-                await status.edit_text("❌ **Processing cancelled.**")
-            except Exception:
-                pass
+            try: await status.edit_text("❌ **Processing cancelled.**")
+            except Exception: pass
         except Exception as exc:
-            try:
-                await status.edit_text(f"❌ **Conversion failed**\n\n`{str(exc)[:1000]}`")
-            except Exception:
-                pass
+            try: await status.edit_text(f"❌ **Conversion failed**\n\n`{str(exc)[:1000]}`")
+            except Exception: pass
         finally:
             clear_transfer_cancel(job.job_id)
             shutil.rmtree(job.work_dir, ignore_errors=True)
@@ -172,20 +178,14 @@ async def _process_named_job(client, message, job):
             await db.update_usage(job.user_id, job.bot_id, size)
             await _finish_delivery(client, message, job, status)
         except AniToonTransferCancelled:
-            try:
-                await status.edit_text("❌ **Processing cancelled.**")
-            except Exception:
-                pass
+            try: await status.edit_text("❌ **Processing cancelled.**")
+            except Exception: pass
         except asyncio.CancelledError:
-            try:
-                await status.edit_text("❌ **Processing cancelled.**")
-            except Exception:
-                pass
+            try: await status.edit_text("❌ **Processing cancelled.**")
+            except Exception: pass
         except Exception as exc:
-            try:
-                await status.edit_text(f"❌ **Rename failed**\n\n`{str(exc)[:1000]}`")
-            except Exception:
-                pass
+            try: await status.edit_text(f"❌ **Rename failed**\n\n`{str(exc)[:1000]}`")
+            except Exception: pass
         finally:
             clear_transfer_cancel(job.job_id)
             shutil.rmtree(job.work_dir, ignore_errors=True)
@@ -196,7 +196,7 @@ async def _process_named_job(client, message, job):
 async def reliable_rename_reply(client, message):
     if not message.text or message.text.startswith("/"):
         return
-    job = await _find_name_job(message.from_user.id)
+    job = await _find_name_job(message.from_user.id, message)
     if not job:
         return
     text = message.text.strip()
@@ -204,11 +204,11 @@ async def reliable_rename_reply(client, message):
         await _delete_message_safely(client, message.chat.id, message.id)
         raise StopPropagation
 
-    # Every user has one pipeline lock. Thus file #2/#3 can be selected while
-    # file #1 is processing, but they are executed strictly FIFO for that user.
+    # Mark the exact job before waiting. A second filename can therefore be
+    # assigned to job #2 while job #1 is still downloading/uploading.
+    await jobs.update(job.job_id, extra={**job.extra, "name_submitted": True})
     user_lock = await jobs.user_lock(message.from_user.id)
     async with user_lock:
-        # The job may have been cancelled while the user was waiting for the lock.
         current = await jobs.get(job.job_id)
         if not current:
             return
