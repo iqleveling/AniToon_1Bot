@@ -10,19 +10,17 @@ async def log_rename_request(*, bot_id: int, job_id: str, user_id: int, user_nam
     await db.db.file_activity.update_one(
         {"job_id": str(job_id)},
         {"$set": {
-            "job_id": str(job_id),
-            "bot_id": int(bot_id),
-            "user_id": int(user_id),
-            "user_name": str(user_name or "Unknown"),
-            "username": str(username or "").lstrip("@"),
-            "original_name": str(original_name),
-            "new_name": str(new_name),
-            "file_size": int(file_size or 0),
-            "output_format": str(output_format or ""),
-            "created_at": now,
+            "job_id": str(job_id), "bot_id": int(bot_id), "user_id": int(user_id),
+            "user_name": str(user_name or "Unknown"), "username": str(username or "").lstrip("@"),
+            "original_name": str(original_name), "new_name": str(new_name), "file_size": int(file_size or 0),
+            "output_format": str(output_format or ""), "status": "requested", "created_at": now,
         }},
         upsert=True,
     )
+
+
+async def mark_rename_completed(job_id: str):
+    await db.db.file_activity.update_one({"job_id": str(job_id)}, {"$set": {"status": "completed", "completed_at": datetime.utcnow()}})
 
 
 async def recent_rename_activity(*, bot_id: int, hours: int = 24, limit: int = 100):
