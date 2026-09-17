@@ -10,7 +10,7 @@ from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from helper.activity_log import mark_rename_completed
 from helper.cancel_manager import register_task, unregister_task
 from helper.database import db
-from helper.ffmpeg import convert_media
+from helper.ffmpeg import convert_media, prepare_video_for_telegram
 from helper.job_state import jobs
 from helper.job_transfer import download_job
 from helper.message_cleanup import protect_result, protect_transfer_message
@@ -118,19 +118,38 @@ async def _process_named_job(client, message, job):
         return
 
     if action == "custom_name":
-        ext = _extension(job.original_name)
-        name = _safe_filename(text)
-        if not _extension(name) and ext: name = f"{name}.{ext}"
-        elif _extension(name) and ext: name = f"{_base_without_extension(name)}.{ext}"
+        source_ext = _extension(job.original_name)
+        video_mode = (job.extra or {}).get("rename_output_mode") == "video"
+        if video_mode:
+            # "Convert into Video" means the final Telegram message must be
+            # a real MP4 video, even when the source is MKV/WEBM/etc. Never
+            # merely rename an MKV to .mp4; remux/encode it into a valid MP4.
+            name = f"{_base_without_extension(_safe_filename(text))}.mp4"
+        else:
+            name = _safe_filename(text)
+            if not _extension(name) and source_ext: name = f"{name}.{source_ext}"
+            elif _extension(name) and source_ext: name = f"{_base_without_extension(name)}.{source_ext}"
+
         status = await _new_transfer_status(client, message, job, int((job.extra or {}).get("telegram_file_size", 0) or 0))
         try:
             await _download_source(client, message, job, status)
-            output_path = os.path.join(job.work_dir, name)
-            os.replace(job.input_path, output_path)
-            if job.extra.get("rename_output_mode") == "video": job.mime_type = "video/mp4" if ext == "mp4" else (job.mime_type or "video/*")
-            results = await _deliver_output(client, job, output_path, name, status)
+
+            if video_mode:
+                prepared_path = os.path.join(job.work_dir, ".converted_video.mp4")
+                async def report(current, total):
+                    await _conversion_progress(current, total, status, job.job_id, name)
+                prepared = await prepare_video_for_telegram(job.input_path, prepared_path, report)
+                if not prepared or not os.path.isfile(prepared):
+                    raise RuntimeError("Could not convert the source into a Telegram-compatible MP4 video")
+                job.mime_type = "video/mp4"
+                results = await _deliver_output(client, job, prepared, name, status)
+            else:
+                output_path = os.path.join(job.work_dir, name)
+                os.replace(job.input_path, output_path)
+                results = await _deliver_output(client, job, output_path, name, status)
+
             if not results: raise RuntimeError("Telegram returned no uploaded result")
-            size = int((job.extra or {}).get("downloaded_size", 0) or os.path.getsize(output_path))
+            size = int((job.extra or {}).get("downloaded_size", 0) or os.path.getsize(job.input_path if os.path.exists(job.input_path) else prepared if video_mode else output_path))
             await db.update_usage(job.user_id, job.bot_id, size)
             await mark_rename_completed(job.job_id)
             await _finish_delivery(client, message, job, status)
@@ -165,7 +184,7 @@ async def reliable_rename_reply(client, message):
         current = await jobs.get(job.job_id)
         if not current: return
         if queue_message:
-            try: await queue_message.edit_text("▶️ **Your file is now starting...")
+            try: await queue_message.edit_text("▶️ **Your file is now starting...**")
             except Exception: pass
         task = await register_task(job.job_id)
         try: await _process_named_job(client, message, current)
