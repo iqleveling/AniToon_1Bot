@@ -40,6 +40,11 @@ class CloneManager:
             client.bot_username = None
             client.clone_manager = None
 
+            # Clones use the main bot as the force-sub verification/administration
+            # client. This means clone owners do not need to make every clone an
+            # administrator in all required channels just to enforce the same gate.
+            client.force_sub_client = self.main_client
+
             await client.start()
             me = await client.get_me()
             client.bot_id = me.id
