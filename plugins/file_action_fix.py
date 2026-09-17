@@ -104,11 +104,7 @@ async def repaired_file_download(client: Client, message: Message):
         raise StopPropagation
     expected_size = int(getattr(media, "file_size", 0) or 0)
     if used + expected_size > plan.daily_limit:
-        await message.reply_text(
-            "🚫 **This file exceeds your remaining daily quota.**\n\n"
-            f"Plan: {plan.name}\nRemaining: `{humanbytes(max(plan.daily_limit - used, 0))}`\n"
-            f"File: `{humanbytes(expected_size)}`"
-        )
+        await message.reply_text("🚫 **This file exceeds your remaining daily quota.**\n\n" f"Plan: {plan.name}\nRemaining: `{humanbytes(max(plan.daily_limit - used, 0))}`\nFile: `{humanbytes(expected_size)}`")
         raise StopPropagation
 
     original_name = _safe_filename(getattr(media, "file_name", None) or f"file_{message.id}")
@@ -117,26 +113,7 @@ async def repaired_file_download(client: Client, message: Message):
     job_id = uuid.uuid4().hex[:12]
     work_dir = os.path.join("downloads", str(user_id), job_id)
     os.makedirs(work_dir, exist_ok=True)
-    job = Job(
-        job_id=job_id,
-        user_id=user_id,
-        bot_id=bot_id,
-        source_message_id=message.id,
-        work_dir=work_dir,
-        input_path=os.path.join(work_dir, original_name),
-        original_name=original_name,
-        mime_type=mime_type,
-        extra={
-            "extension": extension,
-            "file_id": getattr(media, "file_id", "") or "",
-            "source_message": message,
-            "user_data": user_data,
-            "used_before": used,
-            "telegram_file_size": expected_size,
-            "duration": duration,
-            "source_media_type": "video" if message.video else ("audio" if message.audio else "document"),
-        },
-    )
+    job = Job(job_id=job_id, user_id=user_id, bot_id=bot_id, source_message_id=message.id, work_dir=work_dir, input_path=os.path.join(work_dir, original_name), original_name=original_name, mime_type=mime_type, extra={"extension": extension, "file_id": getattr(media, "file_id", "") or "", "source_message": message, "user_data": user_data, "used_before": used, "telegram_file_size": expected_size, "duration": duration, "source_media_type": "video" if message.video else ("audio" if message.audio else "document")})
     if not await jobs.register(job):
         shutil.rmtree(work_dir, ignore_errors=True)
         await message.reply_text("❌ Could not add this file to the queue.")
@@ -145,18 +122,51 @@ async def repaired_file_download(client: Client, message: Message):
         all_jobs = await jobs.get_user_jobs(user_id)
         queue_position = len(all_jobs)
         queue_text = f"\n\n📋 **Queue position:** `#{queue_position}`" if queue_position > 1 else ""
-        status = await message.reply_text(
-            "📂 **File Information**\n\n"
-            f"📄 **Name:** `{original_name}`\n"
-            f"📦 **Size:** `{humanbytes(expected_size)}`\n"
-            f"🎞 **Type:** `{mime_type or extension or 'unknown'}`"
-            + (f"\n🎬 **Runtime:** `{duration // 60}m {duration % 60}s`" if duration else "")
-            + queue_text + "\n\nChoose an operation:",
-            reply_markup=file_action_menu(job_id),
-        )
+        runtime_text = f"\n🎬 **Runtime:** `{duration // 60}m {duration % 60}s`" if duration else ""
+        status = await message.reply_text("📂 **File Information**\n\n" f"📄 **Name:** `{original_name}`\n" f"📦 **Size:** `{humanbytes(expected_size)}`\n" f"🎞 **Type:** `{mime_type or extension or 'unknown'}`" + runtime_text + queue_text + "\n\nChoose an operation:", reply_markup=file_action_menu(job_id))
         await jobs.update(job_id, extra={**job.extra, "status_message_id": status.id})
     except Exception:
         shutil.rmtree(work_dir, ignore_errors=True)
         await jobs.remove(job_id)
         raise StopPropagation
+    raise StopPropagation
+
+
+@Client.on_callback_query(filters.regex(r"^job:rename:([0-9a-f]+)$"), group=-1000)
+async def rename_entry_fix(client, cb):
+    job = await jobs.get(cb.matches[0].group(1))
+    if not job or job.user_id != cb.from_user.id:
+        await cb.answer("Job expired or not owned by you.", show_alert=True); raise StopPropagation
+    await cb.answer()
+    await jobs.update(job.job_id, selected_action="rename_output_choice", extra={**job.extra, "rename_menu_message_id": cb.message.id})
+    try: await cb.message.edit_text("✏️ **Rename**\n\nChoose output type:", reply_markup=rename_output_menu(job.job_id))
+    except Exception: pass
+    raise StopPropagation
+
+
+@Client.on_callback_query(filters.regex(r"^renameoutput:([0-9a-f]+):(file|video)$"), group=-1000)
+async def rename_output_fix(client, cb):
+    job = await jobs.get(cb.matches[0].group(1))
+    if not job or job.user_id != cb.from_user.id:
+        await cb.answer("Job expired or not owned by you.", show_alert=True); raise StopPropagation
+    mode = cb.matches[0].group(2)
+    await cb.answer()
+    await jobs.update(job.job_id, selected_action="custom_name", extra={**job.extra, "rename_output_mode": mode, "rename_menu_message_id": cb.message.id})
+    prompt = await _ask_name(client, job.user_id, "✏️ **Rename**\n\nSend the new filename.", job.job_id, "custom_name")
+    await jobs.update(job.job_id, extra={**job.extra, "rename_prompt_message_id": prompt.id, "prompt_message_id": prompt.id})
+    try: await cb.message.delete()
+    except Exception: pass
+    raise StopPropagation
+
+
+@Client.on_callback_query(filters.regex(r"^job:cancel:([0-9a-f]+)$"), group=-1000)
+async def cancel_pending_file(client, cb):
+    job = await jobs.get(cb.matches[0].group(1))
+    if not job or job.user_id != cb.from_user.id:
+        await cb.answer("Job expired or not owned by you.", show_alert=True); raise StopPropagation
+    await cb.answer("Cancelled", show_alert=True)
+    shutil.rmtree(job.work_dir, ignore_errors=True)
+    await jobs.remove(job.job_id)
+    try: await cb.message.edit_text("❌ **File job cancelled.**", reply_markup=None)
+    except Exception: pass
     raise StopPropagation
