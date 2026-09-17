@@ -7,6 +7,7 @@ import shutil
 from pyrogram import Client, StopPropagation, filters
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
+from helper.activity_log import mark_rename_completed
 from helper.cancel_manager import register_task, unregister_task
 from helper.database import db
 from helper.ffmpeg import convert_media
@@ -50,44 +51,31 @@ def _initial_download_text(expected_size: int) -> str:
 
 async def _delete_message_safely(client, chat_id, message_id):
     if message_id:
-        try:
-            await client.delete_messages(chat_id, int(message_id))
-        except Exception:
-            pass
+        try: await client.delete_messages(chat_id, int(message_id))
+        except Exception: pass
 
 
 async def _new_transfer_status(client, message, job, expected_size):
-    status = await message.reply_text(
-        _initial_download_text(expected_size),
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⏸️ Pause", callback_data=f"transfer:pause:{job.job_id}"), InlineKeyboardButton("❌ Cancel", callback_data=f"transfer:cancel:{job.job_id}")]]),
-    )
+    status = await message.reply_text(_initial_download_text(expected_size), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⏸️ Pause", callback_data=f"transfer:pause:{job.job_id}"), InlineKeyboardButton("❌ Cancel", callback_data=f"transfer:cancel:{job.job_id}")]]))
     await protect_transfer_message(status)
     reset_progress(job.job_id)
     return status
 
 
 async def _conversion_progress(current: float, total: float, status, job_id: str, label: str):
-    if not total or status is None:
-        return
+    if not total or status is None: return
     percent = max(0.0, min(99.9, (float(current) * 100.0) / float(total)))
     try:
         filled = max(0, min(24, int(percent / 100 * 24)))
-        await status.edit_text(
-            "⚙️ **Converting**\n" + "█" * filled + "░" * (24 - filled) + f" {percent:.1f}%\n\n📂 `{label}`",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data=f"transfer:cancel:{job_id}")]]),
-        )
-    except Exception:
-        pass
+        await status.edit_text("⚙️ **Converting**\n" + "█" * filled + "░" * (24 - filled) + f" {percent:.1f}%\n\n📂 `{label}`", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data=f"transfer:cancel:{job_id}")]]))
+    except Exception: pass
 
 
 async def _convert_with_progress(job, status, output_path, output_format, label):
-    async def report(current, total):
-        await _conversion_progress(current, total, status, job.job_id, label)
+    async def report(current, total): await _conversion_progress(current, total, status, job.job_id, label)
     task = await register_task(job.job_id)
-    try:
-        return await convert_media(job.input_path, output_path, output_format, report)
-    finally:
-        await unregister_task(job.job_id, task)
+    try: return await convert_media(job.input_path, output_path, output_format, report)
+    finally: await unregister_task(job.job_id, task)
 
 
 async def _finish_delivery(client, message, job, status):
@@ -97,28 +85,24 @@ async def _finish_delivery(client, message, job, status):
 
 
 async def _process_named_job(client, message, job):
-    """Process one named job. The caller holds the FIFO pipeline lock."""
     action = job.selected_action
     text = message.text.strip()
 
     if action == "convert_name":
         ext = job.output_ext
-        if not ext:
-            raise RuntimeError("Output format is missing")
+        if not ext: raise RuntimeError("Output format is missing")
         name = _safe_filename(text)
-        if _extension(name) != ext:
-            name = f"{_base_without_extension(name)}.{ext}"
+        if _extension(name) != ext: name = f"{_base_without_extension(name)}.{ext}"
         status = await _new_transfer_status(client, message, job, int((job.extra or {}).get("telegram_file_size", 0) or 0))
         try:
             await _download_source(client, message, job, status)
             output_path = os.path.join(job.work_dir, name)
-            if not await _convert_with_progress(job, status, output_path, ext, name):
-                raise RuntimeError("FFmpeg conversion failed")
+            if not await _convert_with_progress(job, status, output_path, ext, name): raise RuntimeError("FFmpeg conversion failed")
             results = await _deliver_output(client, job, output_path, name, status)
-            if not results:
-                raise RuntimeError("Telegram returned no uploaded result")
+            if not results: raise RuntimeError("Telegram returned no uploaded result")
             size = int((job.extra or {}).get("downloaded_size", 0) or os.path.getsize(job.input_path))
             await db.update_usage(job.user_id, job.bot_id, size)
+            await mark_rename_completed(job.job_id)
             await _finish_delivery(client, message, job, status)
         except AniToonTransferCancelled:
             try: await status.edit_text("❌ **Processing cancelled.**")
@@ -130,37 +114,25 @@ async def _process_named_job(client, message, job):
             try: await status.edit_text(f"❌ **Conversion failed**\n\n`{str(exc)[:1000]}`")
             except Exception: pass
         finally:
-            clear_transfer_cancel(job.job_id)
-            shutil.rmtree(job.work_dir, ignore_errors=True)
-            await jobs.remove(job.job_id)
+            clear_transfer_cancel(job.job_id); shutil.rmtree(job.work_dir, ignore_errors=True); await jobs.remove(job.job_id)
         return
 
     if action == "custom_name":
         ext = _extension(job.original_name)
         name = _safe_filename(text)
-        if not _extension(name) and ext:
-            name = f"{name}.{ext}"
-        elif _extension(name) and ext:
-            name = f"{_base_without_extension(name)}.{ext}"
-
+        if not _extension(name) and ext: name = f"{name}.{ext}"
+        elif _extension(name) and ext: name = f"{_base_without_extension(name)}.{ext}"
         status = await _new_transfer_status(client, message, job, int((job.extra or {}).get("telegram_file_size", 0) or 0))
         try:
             await _download_source(client, message, job, status)
-
-            # Rename-only is intentionally identical for documents and videos:
-            # after the download, rename the existing file and send it.  Do NOT
-            # run FFmpeg merely because the source is a video.  That removes the
-            # old video-renaming bottleneck and preserves the original streams.
             output_path = os.path.join(job.work_dir, name)
             os.replace(job.input_path, output_path)
-            if job.extra.get("rename_output_mode") == "video":
-                job.mime_type = "video/mp4" if ext == "mp4" else (job.mime_type or "video/*")
-
+            if job.extra.get("rename_output_mode") == "video": job.mime_type = "video/mp4" if ext == "mp4" else (job.mime_type or "video/*")
             results = await _deliver_output(client, job, output_path, name, status)
-            if not results:
-                raise RuntimeError("Telegram returned no uploaded result")
+            if not results: raise RuntimeError("Telegram returned no uploaded result")
             size = int((job.extra or {}).get("downloaded_size", 0) or os.path.getsize(output_path))
             await db.update_usage(job.user_id, job.bot_id, size)
+            await mark_rename_completed(job.job_id)
             await _finish_delivery(client, message, job, status)
         except AniToonTransferCancelled:
             try: await status.edit_text("❌ **Processing cancelled.**")
@@ -172,47 +144,30 @@ async def _process_named_job(client, message, job):
             try: await status.edit_text(f"❌ **Rename failed**\n\n`{str(exc)[:1000]}`")
             except Exception: pass
         finally:
-            clear_transfer_cancel(job.job_id)
-            shutil.rmtree(job.work_dir, ignore_errors=True)
-            await jobs.remove(job.job_id)
+            clear_transfer_cancel(job.job_id); shutil.rmtree(job.work_dir, ignore_errors=True); await jobs.remove(job.job_id)
 
 
 @Client.on_message(filters.private & filters.text, group=-1200)
 async def reliable_rename_reply(client, message):
-    if not message.text or message.text.startswith("/"):
-        return
+    if not message.text or message.text.startswith("/"): return
     job = await _find_name_job(message.from_user.id, message)
-    if not job:
-        return
+    if not job: return
     text = message.text.strip()
     if not text:
-        await _delete_message_safely(client, message.chat.id, message.id)
-        raise StopPropagation
-
-    # Reserve this exact filename for this exact job before waiting. This lets
-    # the next file receive its own filename while the first file is busy.
+        await _delete_message_safely(client, message.chat.id, message.id); raise StopPropagation
     await jobs.update(job.job_id, extra={**job.extra, "name_submitted": True})
     queue_position = await jobs.user_queue_position(job.job_id)
     queue_message = None
     if queue_position > 0:
-        queue_message = await message.reply_text(
-            f"⏳ **Added to queue — position #{queue_position}**\n\n"
-            "The previous file is still processing. This file will start automatically when its turn arrives."
-        )
-
+        queue_message = await message.reply_text(f"⏳ **Added to queue — position #{queue_position}**\n\nThe previous file is still processing. This file will start automatically when its turn arrives.")
     user_lock = await jobs.user_lock(message.from_user.id)
     async with user_lock:
         current = await jobs.get(job.job_id)
-        if not current:
-            return
+        if not current: return
         if queue_message:
-            try:
-                await queue_message.edit_text("▶️ **Your file is now starting...**")
-            except Exception:
-                pass
+            try: await queue_message.edit_text("▶️ **Your file is now starting...")
+            except Exception: pass
         task = await register_task(job.job_id)
-        try:
-            await _process_named_job(client, message, current)
-        finally:
-            await unregister_task(job.job_id, task)
+        try: await _process_named_job(client, message, current)
+        finally: await unregister_task(job.job_id, task)
     raise StopPropagation
