@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
-import struct
 import time
 
 from pyrogram import Client
@@ -37,41 +36,6 @@ async def _delete_rename_source(client: Client, job: Job) -> None:
         pass
 
 
-def _needs_faststart(path: str) -> bool:
-    if not path.lower().endswith(".mp4"):
-        return False
-    try:
-        with open(path, "rb") as stream:
-            offset = 0
-            saw_mdat = False
-            for _ in range(128):
-                stream.seek(offset)
-                header = stream.read(8)
-                if len(header) < 8:
-                    return False
-                size, atom = struct.unpack(">I4s", header)
-                atom = atom.decode("latin1")
-                header_size = 8
-                if size == 1:
-                    extended = stream.read(8)
-                    if len(extended) < 8:
-                        return False
-                    size = struct.unpack(">Q", extended)[0]
-                    header_size = 16
-                elif size == 0:
-                    return False
-                if atom == "mdat":
-                    saw_mdat = True
-                elif atom == "moov":
-                    return saw_mdat
-                if size < header_size:
-                    return False
-                offset += size
-    except (OSError, ValueError, struct.error):
-        return False
-    return False
-
-
 async def download_job(client: Client, message: Message, job: Job, status: Message) -> int:
     if os.path.isfile(job.input_path) and os.path.getsize(job.input_path) > 0:
         actual = os.path.getsize(job.input_path)
@@ -83,6 +47,14 @@ async def download_job(client: Client, message: Message, job: Job, status: Messa
     expected_size = int(job.extra.get("telegram_file_size", 0) or 0)
     source = job.extra.get("source_message") or job.extra.get("file_id") or message
     os.makedirs(job.work_dir, exist_ok=True)
+
+    # Telegram already provides the source video's duration in the media object.
+    # Set it before the first progress update so runtime is visible from 0%.
+    media = getattr(source, "video", None) or getattr(source, "document", None)
+    duration = getattr(media, "duration", None) if media is not None else None
+    if duration:
+        set_transfer_runtime(job.job_id, duration)
+
     request_transfer_resume(job.job_id)
     task = await register_task(job.job_id)
     acquired = False
@@ -96,7 +68,12 @@ async def download_job(client: Client, message: Message, job: Job, status: Messa
         started = time.time()
         if expected_size:
             await progress_for_pyrogram(0, expected_size, "Downloading", status, started, job.job_id)
-        result = await client.download_media(message=source, file_name=job.input_path, progress=progress_for_pyrogram, progress_args=("Downloading", status, started, job.job_id))
+        result = await client.download_media(
+            message=source,
+            file_name=job.input_path,
+            progress=progress_for_pyrogram,
+            progress_args=("Downloading", status, started, job.job_id),
+        )
         if is_transfer_cancelled(job.job_id):
             raise AniToonTransferCancelled("Transfer cancelled by user")
         path = result if isinstance(result, str) and os.path.isfile(result) else job.input_path
@@ -113,8 +90,10 @@ async def download_job(client: Client, message: Message, job: Job, status: Messa
         await protect_transfer_message(status)
         return actual
     except AniToonTransferCancelled:
-        try: await status.edit_text("❌ **Processing cancelled.**")
-        except Exception: pass
+        try:
+            await status.edit_text("❌ **Processing cancelled.**")
+        except Exception:
+            pass
         raise
     except asyncio.CancelledError:
         await jobs.remove(job.job_id)
@@ -129,37 +108,27 @@ async def download_job(client: Client, message: Message, job: Job, status: Messa
 
 
 async def upload_job(client: Client, job: Job, path: str, filename: str, status: Message | None = None, *, as_video: bool = False):
-    """Upload a processed file. Videos are sent as Telegram video with streaming enabled."""
+    """Upload a file. Videos are sent directly with Telegram's video player enabled."""
     if not os.path.isfile(path) or os.path.getsize(path) <= 0:
         raise RuntimeError("Upload source is missing or empty")
     acquired = False
     task = await register_task(job.job_id)
-    upload_path = path
-    temporary_streamable = None
     try:
         await jobs.acquire()
         acquired = True
         reset_progress(job.job_id)
         started = time.time()
-
-        if as_video and _needs_faststart(path):
-            from helper.ffmpeg import make_streamable
-            temporary_streamable = os.path.join(job.work_dir, f".streamable_{job.job_id}.mp4")
-            prepared = await make_streamable(path, temporary_streamable)
-            if prepared and os.path.isfile(prepared):
-                upload_path = prepared
-
-        size = os.path.getsize(upload_path)
+        size = os.path.getsize(path)
         kwargs = {
             "progress": progress_for_pyrogram,
             "progress_args": ("Uploading", status, started, job.job_id),
         }
+
         if as_video:
             from helper.ffmpeg import get_video_info
-            duration, width, height = await get_video_info(upload_path)
+            duration, width, height = await get_video_info(path)
             if duration <= 0 or width <= 0 or height <= 0:
                 raise RuntimeError("Video metadata could not be read before upload")
-            # The progress message shows the same runtime while the transfer is active.
             set_transfer_runtime(job.job_id, duration)
             kwargs.update({
                 "caption": f"✅ **AniToon Processed**\n\n📂 `{filename}`\n📦 `{humanbytes(size)}`",
@@ -177,23 +146,20 @@ async def upload_job(client: Client, job: Job, path: str, filename: str, status:
             if thumb:
                 kwargs["thumb"] = thumb
             try:
-                return await client.send_video(job.user_id, upload_path, **kwargs)
+                return await client.send_video(job.user_id, path, **kwargs)
             except Exception as exc:
                 if thumb and "thumb" in str(exc).lower():
                     kwargs.pop("thumb", None)
-                    return await client.send_video(job.user_id, upload_path, **kwargs)
+                    return await client.send_video(job.user_id, path, **kwargs)
                 raise RuntimeError(f"Telegram video upload failed: {exc}") from exc
 
         kwargs["caption"] = f"✅ **AniToon Processed**\n\n📂 `{filename}`\n📦 `{humanbytes(size)}`"
         ext = os.path.splitext(filename)[1].lower()
         mime = (job.mime_type or "").lower()
         if mime.startswith("audio/") or ext in {".mp3", ".m4a", ".aac", ".flac", ".ogg", ".wav", ".opus"}:
-            return await client.send_audio(job.user_id, upload_path, **kwargs)
-        return await client.send_document(job.user_id, upload_path, **kwargs)
+            return await client.send_audio(job.user_id, path, **kwargs)
+        return await client.send_document(job.user_id, path, **kwargs)
     finally:
-        if temporary_streamable and temporary_streamable != path:
-            try: os.remove(temporary_streamable)
-            except OSError: pass
         await unregister_task(job.job_id, task)
         if acquired:
             jobs.release()
@@ -206,6 +172,8 @@ async def cancel_job(job_id: str, user_id: int, status: Message | None = None) -
     from helper.utils import request_transfer_cancel
     request_transfer_cancel(job_id)
     if status:
-        try: await status.edit_text("❌ **Cancelling processing...**")
-        except Exception: pass
+        try:
+            await status.edit_text("❌ **Cancelling processing...**")
+        except Exception:
+            pass
     return True
