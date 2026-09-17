@@ -12,9 +12,9 @@ async def start_rename(client, callback_query):
     await callback_query.answer()
 
     try:
-        from plugins.start import get_force_sub_status, make_force_sub_text, make_force_sub_keyboard
+        from plugins.start import FORCE_SUB_CHANNELS, get_force_sub_status, make_force_sub_text, make_force_sub_keyboard
         joined_count, missing, failed = await get_force_sub_status(client, callback_query.from_user.id)
-        if missing or failed or joined_count != 4:
+        if missing or failed or joined_count != len(FORCE_SUB_CHANNELS):
             text = make_force_sub_text(joined_count, len(missing), len(failed))
             keyboard = make_force_sub_keyboard(missing, failed)
             try:
@@ -23,7 +23,11 @@ async def start_rename(client, callback_query):
                 await callback_query.message.reply_text(text, reply_markup=keyboard)
             return
     except Exception:
-        pass
+        try:
+            await callback_query.message.reply_text("⚠️ **Channel verification failed.** Please try again in a moment.")
+        except Exception:
+            pass
+        return
 
     text = "✏️ **Rename File**\n\n📤 Send me a video, document, or audio file."
     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Home", callback_data="start")]])
