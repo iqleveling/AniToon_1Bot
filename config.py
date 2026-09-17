@@ -18,7 +18,7 @@ class Config:
     START_PIC = os.getenv("START_PIC", "").strip()
     COMPLETED_STR = os.getenv("COMPLETED_STR", "▰")
     REMAINING_STR = os.getenv("REMAINING_STR", "▱")
-    MAX_ACTIVE_JOBS = max(1, int(os.getenv("MAX_ACTIVE_JOBS", "20")))
+    MAX_ACTIVE_JOBS = max(1, int(os.getenv("MAX_ACTIVE_JOBS", "100")))
     MAX_CONCURRENT_TRANSMISSIONS = max(1, int(os.getenv("MAX_CONCURRENT_TRANSMISSIONS", "3")))
     MAX_CONCURRENT_PROCESSING = max(1, int(os.getenv("MAX_CONCURRENT_PROCESSING", "2")))
     FFMPEG_PRESET = os.getenv("FFMPEG_PRESET", "ultrafast").strip() or "ultrafast"
