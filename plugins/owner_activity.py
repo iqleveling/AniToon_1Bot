@@ -7,12 +7,13 @@ from pyrogram import Client, filters
 from config import Config
 from helper.activity_log import log_rename_request, recent_rename_activity
 from helper.admin_access import is_owner
+from helper.database import db
 from helper.job_state import jobs
 from helper.utils import humanbytes
 
 
 def _owner_filter():
-    return filters.user([int(Config.OWNER_ID)]) if Config.OWNER_ID else filters.user([])
+    return filters.user(int(Config.OWNER_ID)) if Config.OWNER_ID else filters.user(0)
 
 
 def _display_user(name: str, username: str | None, user_id: int) -> str:
@@ -23,8 +24,6 @@ def _display_user(name: str, username: str | None, user_id: int) -> str:
 
 def _job_status(job) -> str:
     action = job.selected_action or "waiting for action"
-    if action in {"custom_name", "convert_name", "rename_output_choice", "rename_format", "advanced_menu"}:
-        return f"queued/processing: `{action}`"
     return f"`{action}`"
 
 
@@ -68,21 +67,25 @@ async def owner_processing_activity(client, message):
     """Owner-only dashboard: live jobs plus rename requests from the last 24 hours."""
     if not is_owner(message.from_user.id):
         return
+
     bot_id = int(getattr(client, "bot_id", 0))
-    jobs_by_user = []
+    live_jobs = []
     try:
         async for user in db.get_all_users():
-            for job in await jobs.get_user_jobs(int(user.get("id", 0))):
+            user_id = int(user.get("id", 0) or 0)
+            if not user_id:
+                continue
+            for job in await jobs.get_user_jobs(user_id):
                 if int(job.bot_id) == bot_id:
-                    jobs_by_user.append(job)
+                    live_jobs.append(job)
     except Exception:
-        jobs_by_user = []
+        live_jobs = []
 
-    lines = ["👑 **OWNER PROCESSING DASHBOARD**", "", f"🟢 **Currently in memory:** `{len(jobs_by_user)}`", ""]
-    if not jobs_by_user:
+    lines = ["👑 **OWNER PROCESSING DASHBOARD**", "", f"🟢 **Currently queued/processing:** `{len(live_jobs)}`", ""]
+    if not live_jobs:
         lines.append("No files are currently waiting or processing.")
     else:
-        for index, job in enumerate(sorted(jobs_by_user, key=lambda x: x.created_at), 1):
+        for index, job in enumerate(sorted(live_jobs, key=lambda x: x.created_at), 1):
             src = (job.extra or {}).get("source_message")
             user = getattr(src, "from_user", None)
             if user:
@@ -93,12 +96,15 @@ async def owner_processing_activity(client, message):
                 full_name = str(data.get("first_name") or data.get("name") or "Unknown")
                 username = data.get("username")
             size = int((job.extra or {}).get("telegram_file_size", 0) or 0)
-            pos = await jobs.user_queue_position(job.job_id)
+            queue_position = await jobs.user_queue_position(job.job_id)
+            media_type = job.mime_type or (job.original_name.rsplit(".", 1)[-1] if "." in job.original_name else "unknown")
             lines.extend([
                 f"**{index}.** {_display_user(full_name, username, job.user_id)}",
-                f"📄 `{job.original_name}`",
-                f"📦 `{humanbytes(size)}`  •  `{job.mime_type or 'unknown'}`",
-                f"⚙️ {_job_status(job)}  •  Queue: `#{pos + 1 if pos else 1}`",
+                f"📄 File: `{job.original_name[:180]}`",
+                f"📦 Size: `{humanbytes(size)}`",
+                f"🎞 Type: `{media_type}`",
+                f"⚙️ Status: {_job_status(job)}",
+                f"📋 Queue: `#{queue_position + 1 if queue_position else 1}`",
                 f"🆔 Job: `{job.job_id}`",
                 "",
             ])
@@ -107,26 +113,24 @@ async def owner_processing_activity(client, message):
         history = await recent_rename_activity(bot_id=bot_id, hours=24, limit=80)
     except Exception:
         history = []
-    lines.extend(["", "🕐 **RENAMED FILES — LAST 24 HOURS**", ""])
+
+    lines.extend(["🕐 **RENAMED FILES — LAST 24 HOURS**", ""])
     if not history:
         lines.append("No rename activity recorded in the last 24 hours.")
     else:
         for index, item in enumerate(history, 1):
             created = item.get("created_at")
-            if isinstance(created, datetime):
-                stamp = created.strftime("%Y-%m-%d %H:%M UTC")
-            else:
-                stamp = "unknown time"
+            stamp = created.strftime("%Y-%m-%d %H:%M UTC") if isinstance(created, datetime) else "unknown time"
             lines.extend([
                 f"**{index}.** {_display_user(item.get('user_name'), item.get('username'), int(item.get('user_id', 0)))}",
                 f"📄 Old: `{str(item.get('original_name', ''))[:180]}`",
                 f"✏️ New: `{str(item.get('new_name', ''))[:180]}`",
-                f"📦 Size: `{humanbytes(int(item.get('file_size', 0) or 0))}`  •  Format: `{item.get('output_format') or 'original'}`",
+                f"📦 Size: `{humanbytes(int(item.get('file_size', 0) or 0))}`",
+                f"🔄 Format: `{item.get('output_format') or 'original'}`",
                 f"🕐 `{stamp}`  •  Job: `{item.get('job_id', '-')}`",
                 "",
             ])
 
-    # Telegram message limit is 4096 characters. Send the dashboard in safe chunks.
     text = "\n".join(lines)
     chunks = [text[i:i + 3900] for i in range(0, len(text), 3900)] or ["👑 No activity data."]
     for chunk in chunks:
