@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import struct
 from typing import Awaitable, Callable
 
 from config import Config
@@ -67,6 +68,45 @@ async def _duration(file_path: str) -> float:
     data = await _probe(file_path)
     try: return float(data.get("format", {}).get("duration", 0) or 0)
     except (TypeError, ValueError): return 0.0
+
+
+def _mp4_needs_faststart(path: str) -> bool:
+    """Check the top-level MP4 atom order without invoking FFmpeg."""
+    if not path.lower().endswith(".mp4"):
+        return False
+    try:
+        file_size = os.path.getsize(path)
+        with open(path, "rb") as stream:
+            offset = 0
+            saw_mdat = False
+            for _ in range(512):
+                stream.seek(offset)
+                header = stream.read(8)
+                if len(header) < 8:
+                    return False
+                size, atom = struct.unpack(">I4s", header)
+                header_size = 8
+                if size == 1:
+                    extended = stream.read(8)
+                    if len(extended) < 8:
+                        return False
+                    size = struct.unpack(">Q", extended)[0]
+                    header_size = 16
+                elif size == 0:
+                    return False
+                if size < header_size or offset + size > file_size:
+                    return False
+                atom = atom.decode("latin1")
+                if atom == "mdat":
+                    saw_mdat = True
+                elif atom == "moov":
+                    return saw_mdat
+                offset += size
+                if offset >= file_size:
+                    return False
+    except (OSError, ValueError, struct.error):
+        return False
+    return False
 
 
 async def fix_metadata(input_file, output_file, audio_name=DEFAULT_METADATA_NAME, subtitle_name=DEFAULT_METADATA_NAME):
@@ -148,14 +188,23 @@ async def prepare_video_for_telegram(input_file: str, output_file: str, progress
     video_codec, audio_codec = await _video_codecs(input_file)
     ext = os.path.splitext(input_file)[1].lower()
     if ext == ".mp4" and video_codec == "h264" and audio_codec in {None, "", "aac"}:
-        if os.path.abspath(input_file) != os.path.abspath(output_file):
-            try: os.link(input_file, output_file)
-            except OSError:
-                try:
-                    import shutil; shutil.copy2(input_file, output_file)
-                except Exception: return None
-        if progress_callback and duration > 0: await progress_callback(duration, duration)
-        return output_file
+        # MP4/H264/AAC needs no quality-changing encode. If it is already
+        # fast-start, just hardlink/copy it so upload can begin immediately.
+        if not _mp4_needs_faststart(input_file):
+            if os.path.abspath(input_file) != os.path.abspath(output_file):
+                try: os.link(input_file, output_file)
+                except OSError:
+                    try:
+                        import shutil; shutil.copy2(input_file, output_file)
+                    except Exception: return None
+            if progress_callback and duration > 0: await progress_callback(duration, duration)
+            return output_file
+        # moov follows mdat: perform the one required lossless remux NOW,
+        # during the explicit MP4 conversion, so the upload has no extra
+        # processing pause after conversion reaches 100%.
+        cmd = ["ffmpeg", "-y", "-i", input_file, "-map", "0:v:0", "-map", "0:a?", "-c", "copy", "-movflags", "+faststart", "-sn", output_file]
+        if await _run_ffmpeg(cmd, progress_callback, duration) and os.path.isfile(output_file): return output_file
+        return None
     if video_codec == "h264" and audio_codec in {None, "", "aac"}:
         cmd = ["ffmpeg", "-y", "-i", input_file, "-map", "0:v:0", "-map", "0:a?", "-c", "copy", "-movflags", "+faststart", "-sn", output_file]
         if await _run_ffmpeg(cmd, progress_callback, duration) and os.path.isfile(output_file): return output_file
