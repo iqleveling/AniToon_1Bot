@@ -67,7 +67,7 @@ async def _conversion_progress(current: float, total: float, status, job_id: str
     percent = max(0.0, min(99.9, (float(current) * 100.0) / float(total)))
     try:
         filled = max(0, min(24, int(percent / 100 * 24)))
-        await status.edit_text("⚙️ **Converting**\n" + "█" * filled + "░" * (24 - filled) + f" {percent:.1f}%\n\n📂 `{label}`", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data=f"transfer:cancel:{job_id}")]]))
+        await status.edit_text("⚙️ **Converting Video**\n" + "█" * filled + "░" * (24 - filled) + f" {percent:.1f}%\n\n📂 `{label}`\n🎬 The final result will be sent as a playable Telegram video.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data=f"transfer:cancel:{job_id}")]]))
     except Exception: pass
 
 
@@ -121,9 +121,6 @@ async def _process_named_job(client, message, job):
         source_ext = _extension(job.original_name)
         video_mode = (job.extra or {}).get("rename_output_mode") == "video"
         if video_mode:
-            # "Convert into Video" means the final Telegram message must be
-            # a real MP4 video, even when the source is MKV/WEBM/etc. Never
-            # merely rename an MKV to .mp4; remux/encode it into a valid MP4.
             name = f"{_base_without_extension(_safe_filename(text))}.mp4"
         else:
             name = _safe_filename(text)
@@ -142,7 +139,7 @@ async def _process_named_job(client, message, job):
                 if not prepared or not os.path.isfile(prepared):
                     raise RuntimeError("Could not convert the source into a Telegram-compatible MP4 video")
                 job.mime_type = "video/mp4"
-                results = await _deliver_output(client, job, prepared, name, status)
+                results = await _deliver_output(client, job, prepared, name, status, prepared_video=True)
             else:
                 output_path = os.path.join(job.work_dir, name)
                 os.replace(job.input_path, output_path)
