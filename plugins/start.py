@@ -22,6 +22,25 @@ FORCE_SUB_CHANNELS = [
 PRIVATE_FORCE_SUB_CHAT_ID = -1002732670564
 
 
+async def _ensure_private_force_sub_link(client: Client) -> str:
+    """Use configured invite link or create a join-request invite automatically."""
+    channel = next(c for c in FORCE_SUB_CHANNELS if c["chat"] == PRIVATE_FORCE_SUB_CHAT_ID)
+    if channel.get("link"):
+        return channel["link"]
+    try:
+        invite = await client.create_chat_invite_link(
+            PRIVATE_FORCE_SUB_CHAT_ID,
+            name="AniToon Force Sub",
+            creates_join_request=True,
+        )
+        channel["link"] = invite.invite_link
+        log.info("Force-sub: created private invite link for Channel 4")
+        return channel["link"]
+    except Exception:
+        log.exception("Force-sub: could not create private invite link")
+        return ""
+
+
 @Client.on_chat_join_request(filters.chat(PRIVATE_FORCE_SUB_CHAT_ID), group=-100)
 async def private_force_sub_join_request(client: Client, request):
     """Automatically approve every join request for the required private channel."""
@@ -76,6 +95,8 @@ async def _check_one_channel(client: Client, user_id: int, channel: dict):
 
 
 async def get_force_sub_status(client: Client, user_id: int):
+    # Generate the private-channel button when no invite URL was configured.
+    await _ensure_private_force_sub_link(client)
     results = await asyncio.gather(*[_check_one_channel(client, user_id, channel) for channel in FORCE_SUB_CHANNELS])
     joined_count = 0
     missing_channels = []
