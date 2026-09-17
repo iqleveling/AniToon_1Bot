@@ -22,18 +22,12 @@ NAME_ACTIONS = {"custom_name", "convert_name"}
 
 async def _find_name_job(user_id: int, message=None):
     jobs_for_user = await jobs.get_user_jobs(user_id)
-
-    # If Telegram supplied a ForceReply target, bind the filename to the exact
-    # prompt/job. This prevents filename #2 from accidentally being consumed by
-    # file #1 while file #1 is uploading.
     reply_id = getattr(getattr(message, "reply_to_message", None), "id", None) if message else None
     if reply_id:
         for job in jobs_for_user:
             if getattr(job, "selected_action", None) in NAME_ACTIONS and not job.extra.get("name_submitted"):
                 if int((job.extra or {}).get("rename_prompt_message_id", 0) or 0) == int(reply_id):
                     return job
-
-    # Otherwise take the first named job that has not already consumed a name.
     for job in jobs_for_user:
         if getattr(job, "selected_action", None) in NAME_ACTIONS and not job.extra.get("name_submitted"):
             return job
@@ -102,19 +96,11 @@ async def _finish_delivery(client, message, job, status):
     await _delete_message_safely(client, status.chat.id, status.id)
 
 
-async def _convert_rename_to_video(job, name: str, status):
-    if job.extra.get("rename_output_mode") != "video" or _extension(job.original_name) == "mp4":
-        return os.path.join(job.work_dir, name)
-    output_path = os.path.join(job.work_dir, f".rename_video_{job.job_id}.mp4")
-    if not await _convert_with_progress(job, status, output_path, "mp4", name):
-        raise RuntimeError("Could not convert the renamed source into MP4 video")
-    return output_path
-
-
 async def _process_named_job(client, message, job):
-    """Process exactly one named job. The caller holds the global FIFO lock."""
+    """Process one named job. The caller holds the FIFO pipeline lock."""
     action = job.selected_action
     text = message.text.strip()
+
     if action == "convert_name":
         ext = job.output_ext
         if not ext:
@@ -156,21 +142,20 @@ async def _process_named_job(client, message, job):
             name = f"{name}.{ext}"
         elif _extension(name) and ext:
             name = f"{_base_without_extension(name)}.{ext}"
+
         status = await _new_transfer_status(client, message, job, int((job.extra or {}).get("telegram_file_size", 0) or 0))
         try:
             await _download_source(client, message, job, status)
+
+            # Rename-only is intentionally identical for documents and videos:
+            # after the download, rename the existing file and send it.  Do NOT
+            # run FFmpeg merely because the source is a video.  That removes the
+            # old video-renaming bottleneck and preserves the original streams.
+            output_path = os.path.join(job.work_dir, name)
+            os.replace(job.input_path, output_path)
             if job.extra.get("rename_output_mode") == "video":
-                video_path = await _convert_rename_to_video(job, name, status)
-                if video_path != os.path.join(job.work_dir, name):
-                    name = f"{_base_without_extension(name)}.mp4"
-                    output_path = os.path.join(job.work_dir, name)
-                    os.replace(video_path, output_path)
-                else:
-                    output_path = video_path
-                job.mime_type = "video/mp4"
-            else:
-                output_path = os.path.join(job.work_dir, name)
-                os.replace(job.input_path, output_path)
+                job.mime_type = "video/mp4" if ext == "mp4" else (job.mime_type or "video/*")
+
             results = await _deliver_output(client, job, output_path, name, status)
             if not results:
                 raise RuntimeError("Telegram returned no uploaded result")
@@ -204,14 +189,27 @@ async def reliable_rename_reply(client, message):
         await _delete_message_safely(client, message.chat.id, message.id)
         raise StopPropagation
 
-    # Mark the exact job before waiting. A second filename can therefore be
-    # assigned to job #2 while job #1 is still downloading/uploading.
+    # Reserve this exact filename for this exact job before waiting. This lets
+    # the next file receive its own filename while the first file is busy.
     await jobs.update(job.job_id, extra={**job.extra, "name_submitted": True})
+    queue_position = await jobs.user_queue_position(job.job_id)
+    queue_message = None
+    if queue_position > 0:
+        queue_message = await message.reply_text(
+            f"⏳ **Added to queue — position #{queue_position}**\n\n"
+            "The previous file is still processing. This file will start automatically when its turn arrives."
+        )
+
     user_lock = await jobs.user_lock(message.from_user.id)
     async with user_lock:
         current = await jobs.get(job.job_id)
         if not current:
             return
+        if queue_message:
+            try:
+                await queue_message.edit_text("▶️ **Your file is now starting...**")
+            except Exception:
+                pass
         task = await register_task(job.job_id)
         try:
             await _process_named_job(client, message, current)
