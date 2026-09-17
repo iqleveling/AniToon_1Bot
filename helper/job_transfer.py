@@ -13,7 +13,7 @@ from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 from helper.cancel_manager import register_task, unregister_task
 from helper.job_state import Job, jobs
 from helper.message_cleanup import protect_transfer_message
-from helper.utils import AniToonTransferCancelled, humanbytes, progress_for_pyrogram, reset_progress, request_transfer_resume
+from helper.utils import AniToonTransferCancelled, humanbytes, progress_for_pyrogram, reset_progress, request_transfer_resume, set_transfer_runtime
 
 
 def cancel_markup(job_id: str):
@@ -38,12 +38,6 @@ async def _delete_rename_source(client: Client, job: Job) -> None:
 
 
 def _needs_faststart(path: str) -> bool:
-    """Return True only when an MP4 has its moov atom after mdat.
-
-    Reordering MP4 atoms with -c copy does not re-encode the media, so the
-    original audio/video quality is preserved. Files already suitable for
-    streaming are left untouched for maximum speed.
-    """
     if not path.lower().endswith(".mp4"):
         return False
     try:
@@ -79,7 +73,6 @@ def _needs_faststart(path: str) -> bool:
 
 
 async def download_job(client: Client, message: Message, job: Job, status: Message) -> int:
-    """Download one job; queued jobs wait for the transfer slot."""
     if os.path.isfile(job.input_path) and os.path.getsize(job.input_path) > 0:
         actual = os.path.getsize(job.input_path)
         await jobs.update(job.job_id, extra={**job.extra, "downloaded_size": actual})
@@ -136,7 +129,7 @@ async def download_job(client: Client, message: Message, job: Job, status: Messa
 
 
 async def upload_job(client: Client, job: Job, path: str, filename: str, status: Message | None = None, *, as_video: bool = False):
-    """Upload only after download/processing completes, with streaming video support."""
+    """Upload a processed file. Videos are sent as Telegram video with streaming enabled."""
     if not os.path.isfile(path) or os.path.getsize(path) <= 0:
         raise RuntimeError("Upload source is missing or empty")
     acquired = False
@@ -166,13 +159,14 @@ async def upload_job(client: Client, job: Job, path: str, filename: str, status:
             duration, width, height = await get_video_info(upload_path)
             if duration <= 0 or width <= 0 or height <= 0:
                 raise RuntimeError("Video metadata could not be read before upload")
+            # The progress message shows the same runtime while the transfer is active.
+            set_transfer_runtime(job.job_id, duration)
             kwargs.update({
                 "caption": f"✅ **AniToon Processed**\n\n📂 `{filename}`\n📦 `{humanbytes(size)}`",
                 "duration": max(1, int(round(duration))),
                 "width": int(width),
                 "height": int(height),
                 "supports_streaming": True,
-                "file_name": filename,
             })
             thumb = None
             try:
