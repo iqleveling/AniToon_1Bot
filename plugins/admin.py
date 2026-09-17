@@ -22,6 +22,7 @@ async def admin_panel(client, message):
     if not main_bot_only(client):
         return
     role = "Owner" if is_owner(message.from_user.id) else "Admin"
+    owner_line = "👑 `/processing` — live processing + last 24h rename history\n" if is_owner(message.from_user.id) else ""
     await message.reply_text(
         f"👑 **AniToon {role} Panel**\n\n"
         "📊 `/users` — total users\n"
@@ -30,7 +31,8 @@ async def admin_panel(client, message):
         "🚫 `/ban <user_id>` — ban user\n"
         "✅ `/unban <user_id>` — unban user\n"
         "📣 `/broadcast` — broadcast a replied message\n"
-        "🔄 `/restart` — restart bot\n\n"
+        "🔄 `/restart` — restart bot\n"
+        + owner_line + "\n"
         "⚡ Admin accounts are intended to have unrestricted bot access."
     )
 
