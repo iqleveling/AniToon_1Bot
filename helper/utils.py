@@ -13,6 +13,7 @@ class AniToonTransferCancelled(Exception):
 _CANCELLED_TRANSFERS = set()
 _LAST_PROGRESS_UPDATE = {}
 _PAUSE_EVENTS = {}
+_TRANSFER_RUNTIME = {}
 
 
 def request_transfer_cancel(job_id: str):
@@ -28,6 +29,7 @@ def clear_transfer_cancel(job_id: str):
         key = str(job_id)
         _CANCELLED_TRANSFERS.discard(key)
         _LAST_PROGRESS_UPDATE.pop(key, None)
+        _TRANSFER_RUNTIME.pop(key, None)
         event = _PAUSE_EVENTS.pop(key, None)
         if event is not None:
             event.set()
@@ -36,6 +38,17 @@ def clear_transfer_cancel(job_id: str):
 def reset_progress(job_id: str):
     if job_id:
         _LAST_PROGRESS_UPDATE.pop(str(job_id), None)
+
+
+def set_transfer_runtime(job_id: str, seconds: float | int | None):
+    if not job_id:
+        return
+    try:
+        value = int(round(float(seconds or 0)))
+    except (TypeError, ValueError):
+        value = 0
+    if value > 0:
+        _TRANSFER_RUNTIME[str(job_id)] = value
 
 
 def is_transfer_cancelled(job_id: str) -> bool:
@@ -96,7 +109,7 @@ def _progress_bar(percentage: float) -> str:
     return "█" * completed + "░" * (24 - completed)
 
 
-def _progress_text(current, total, ud_type, start):
+def _progress_text(current, total, ud_type, start, job_id=None):
     current = max(0, int(current or 0))
     total = max(0, int(total or 0))
     elapsed = max(0.001, time.time() - start)
@@ -106,7 +119,9 @@ def _progress_text(current, total, ud_type, start):
     if speed > 0 and total >= current:
         eta_text = time_formatter(max(0, int((total - current) / speed)) * 1000)
     title = "📤 Upload Progress" if "upload" in str(ud_type).lower() else "📥 Download Progress"
-    return f"{title}\n{_progress_bar(percentage)} {percentage:.2f}%\n\n📦 Size: {humanbytes(current)} / {humanbytes(total)}\n🚀 Speed: {humanbytes(speed)}/s\n⏱ ETA: {eta_text}"
+    runtime = _TRANSFER_RUNTIME.get(str(job_id)) if job_id else None
+    runtime_line = f"🎬 Runtime: {time_formatter(runtime * 1000)}\n" if runtime else ""
+    return f"{title}\n{_progress_bar(percentage)} {percentage:.2f}%\n\n📦 Size: {humanbytes(current)} / {humanbytes(total)}\n{runtime_line}🚀 Speed: {humanbytes(speed)}/s\n⏱ ETA: {eta_text}"
 
 
 def _transfer_markup(job_id, ud_type):
@@ -137,7 +152,7 @@ async def progress_for_pyrogram(current, total, ud_type, message, start, job_id=
     if last is not None and not is_final and now - last < interval:
         return
     try:
-        await message.edit_text(_progress_text(current, total, ud_type, start), reply_markup=_transfer_markup(job_id, ud_type))
+        await message.edit_text(_progress_text(current, total, ud_type, start, job_id), reply_markup=_transfer_markup(job_id, ud_type))
         _LAST_PROGRESS_UPDATE[key] = now
     except Exception:
         pass
