@@ -22,11 +22,24 @@ FORCE_SUB_CHANNELS = [
 PRIVATE_FORCE_SUB_CHAT_ID = -1002732670564
 
 
+def _valid_join_link(value) -> bool:
+    """Telegram inline-button URL must be a real HTTP(S) or tg:// link."""
+    value = str(value or "").strip()
+    return value.startswith(("https://t.me/", "http://t.me/", "https://telegram.me/", "http://telegram.me/", "tg://"))
+
+
 async def _ensure_private_force_sub_link(client: Client) -> str:
     """Use configured invite link or create a join-request invite automatically."""
     channel = next(c for c in FORCE_SUB_CHANNELS if c["chat"] == PRIVATE_FORCE_SUB_CHAT_ID)
-    if channel.get("link"):
-        return channel["link"]
+    configured = str(channel.get("link") or "").strip()
+
+    if configured and _valid_join_link(configured):
+        return configured
+
+    if configured and not _valid_join_link(configured):
+        log.warning("Force-sub: invalid FORCE_SUB_PRIVATE_LINK configured; generating a valid invite")
+        channel["link"] = ""
+
     try:
         invite = await client.create_chat_invite_link(
             PRIVATE_FORCE_SUB_CHAT_ID,
@@ -95,7 +108,7 @@ async def _check_one_channel(client: Client, user_id: int, channel: dict):
 
 
 async def get_force_sub_status(client: Client, user_id: int):
-    # Generate the private-channel button when no invite URL was configured.
+    # Always try to make the private-channel button available before checking membership.
     await _ensure_private_force_sub_link(client)
     results = await asyncio.gather(*[_check_one_channel(client, user_id, channel) for channel in FORCE_SUB_CHANNELS])
     joined_count = 0
@@ -121,22 +134,54 @@ def make_force_sub_text(joined_count: int, missing_count: int, failed_count: int
         f"❗ **Remaining:** `{remaining}`\n"
     )
     if failed_count:
-        text += "\n⚠️ I could not verify one or more channels. Please try again in a moment."
-    return text + "\n\nTap the remaining channel buttons below, join them, then press **🔄 Check & Retry**."
+        text += (
+            "\n⚠️ I could not verify one or more channels right now. "
+            "The join buttons are still shown below."
+        )
+    return text + "\n\nTap the remaining channel buttons, join them, then press **🔄 Check & Retry**."
 
 
 def make_force_sub_keyboard(missing_channels, failed_channels=None):
     failed_channels = failed_channels or []
     rows = []
-    for channel in list(missing_channels) + [c for c in failed_channels if c not in missing_channels]:
-        if channel.get("link"):
-            rows.append([InlineKeyboardButton(f"📢 {channel['name']}", url=channel["link"])])
+    seen = set()
+
+    # Keep missing channels first, followed by channels whose membership could not be verified.
+    channels = list(missing_channels) + [c for c in failed_channels if c not in missing_channels]
+    for channel in channels:
+        name = str(channel.get("name") or "Required Channel")
+        link = str(channel.get("link") or "").strip()
+        if _valid_join_link(link) and link not in seen:
+            rows.append([InlineKeyboardButton(f"📢 {name}", url=link)])
+            seen.add(link)
+
+    rows.append([InlineKeyboardButton("🔄 Check & Retry", callback_data="check_force_sub")])
+    return InlineKeyboardMarkup(rows)
+
+
+def _force_sub_error_keyboard():
+    """Fallback keyboard used when verification itself fails unexpectedly."""
+    rows = []
+    for channel in FORCE_SUB_CHANNELS:
+        link = str(channel.get("link") or "").strip()
+        if _valid_join_link(link):
+            rows.append([InlineKeyboardButton(f"📢 {channel['name']}", url=link)])
     rows.append([InlineKeyboardButton("🔄 Check & Retry", callback_data="check_force_sub")])
     return InlineKeyboardMarkup(rows)
 
 
 async def send_force_sub_message(client: Client, message: Message):
-    joined_count, missing_channels, failed_channels = await get_force_sub_status(client, message.from_user.id)
+    try:
+        joined_count, missing_channels, failed_channels = await get_force_sub_status(client, message.from_user.id)
+    except Exception:
+        log.exception("Force-sub status check failed for user %s", message.from_user.id)
+        await message.reply_text(
+            "⚠️ **Channel verification is temporarily unavailable.**\n\n"
+            "Please use the channel buttons below, then press **🔄 Check & Retry**.",
+            reply_markup=_force_sub_error_keyboard(),
+        )
+        return False
+
     if joined_count == len(FORCE_SUB_CHANNELS) and not missing_channels and not failed_channels:
         return True
     await message.reply_text(
@@ -156,7 +201,18 @@ async def start(client: Client, message: Message):
         except Exception:
             log.exception("Could not create/find user %s", user_id)
 
-        joined_count, missing_channels, failed_channels = await get_force_sub_status(client, user_id)
+        # Do not turn a force-sub problem into the generic "Something went wrong" message.
+        try:
+            joined_count, missing_channels, failed_channels = await get_force_sub_status(client, user_id)
+        except Exception:
+            log.exception("Start: force-sub verification crashed for user %s", user_id)
+            await message.reply_text(
+                "⚠️ **Channel verification is temporarily unavailable.**\n\n"
+                "Please join the required channels using the buttons below, then press **🔄 Check & Retry**.",
+                reply_markup=_force_sub_error_keyboard(),
+            )
+            return
+
         if joined_count != len(FORCE_SUB_CHANNELS) or missing_channels or failed_channels:
             await message.reply_text(
                 make_force_sub_text(joined_count, len(missing_channels), len(failed_channels)),
