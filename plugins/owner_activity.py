@@ -7,7 +7,6 @@ from pyrogram import Client, filters
 from config import Config
 from helper.activity_log import log_rename_request, recent_rename_activity
 from helper.admin_access import is_owner
-from helper.database import db
 from helper.job_state import jobs
 from helper.utils import humanbytes
 
@@ -23,8 +22,7 @@ def _display_user(name: str, username: str | None, user_id: int) -> str:
 
 
 def _job_status(job) -> str:
-    action = job.selected_action or "waiting for action"
-    return f"`{action}`"
+    return f"`{job.selected_action or 'waiting for action'}`"
 
 
 @Client.on_message(filters.private & filters.text & filters.reply, group=-1300)
@@ -47,17 +45,7 @@ async def capture_owner_rename_activity(client, message):
             new_name = f"{new_name.rsplit('.', 1)[0] if '.' in new_name else new_name}.{ext}"
         user = message.from_user
         full_name = " ".join(x for x in [user.first_name, user.last_name] if x).strip() or "Unknown"
-        await log_rename_request(
-            bot_id=int(getattr(client, "bot_id", 0)),
-            job_id=job.job_id,
-            user_id=int(user.id),
-            user_name=full_name,
-            username=user.username,
-            original_name=job.original_name,
-            new_name=new_name,
-            file_size=int((job.extra or {}).get("telegram_file_size", 0) or 0),
-            output_format=ext or job.mime_type or "",
-        )
+        await log_rename_request(bot_id=int(getattr(client, "bot_id", 0)), job_id=job.job_id, user_id=int(user.id), user_name=full_name, username=user.username, original_name=job.original_name, new_name=new_name, file_size=int((job.extra or {}).get("telegram_file_size", 0) or 0), output_format=ext or job.mime_type or "")
     except Exception:
         return
 
@@ -67,17 +55,9 @@ async def owner_processing_activity(client, message):
     """Owner-only dashboard: live jobs plus rename requests from the last 24 hours."""
     if not is_owner(message.from_user.id):
         return
-
     bot_id = int(getattr(client, "bot_id", 0))
-    live_jobs = []
     try:
-        async for user in db.get_all_users():
-            user_id = int(user.get("id", 0) or 0)
-            if not user_id:
-                continue
-            for job in await jobs.get_user_jobs(user_id):
-                if int(job.bot_id) == bot_id:
-                    live_jobs.append(job)
+        live_jobs = [job for job in await jobs.get_all_jobs() if int(job.bot_id) == bot_id and job.active]
     except Exception:
         live_jobs = []
 
@@ -96,13 +76,15 @@ async def owner_processing_activity(client, message):
                 full_name = str(data.get("first_name") or data.get("name") or "Unknown")
                 username = data.get("username")
             size = int((job.extra or {}).get("telegram_file_size", 0) or 0)
+            duration = int((job.extra or {}).get("duration", 0) or 0)
+            runtime = f"{duration // 3600}h {duration % 3600 // 60}m {duration % 60}s" if duration >= 3600 else f"{duration // 60}m {duration % 60}s" if duration else "-"
             queue_position = await jobs.user_queue_position(job.job_id)
             media_type = job.mime_type or (job.original_name.rsplit(".", 1)[-1] if "." in job.original_name else "unknown")
             lines.extend([
                 f"**{index}.** {_display_user(full_name, username, job.user_id)}",
                 f"📄 File: `{job.original_name[:180]}`",
                 f"📦 Size: `{humanbytes(size)}`",
-                f"🎞 Type: `{media_type}`",
+                f"🎞 Type: `{media_type}`  •  🎬 Runtime: `{runtime}`",
                 f"⚙️ Status: {_job_status(job)}",
                 f"📋 Queue: `#{queue_position + 1 if queue_position else 1}`",
                 f"🆔 Job: `{job.job_id}`",
@@ -113,7 +95,6 @@ async def owner_processing_activity(client, message):
         history = await recent_rename_activity(bot_id=bot_id, hours=24, limit=80)
     except Exception:
         history = []
-
     lines.extend(["🕐 **RENAMED FILES — LAST 24 HOURS**", ""])
     if not history:
         lines.append("No rename activity recorded in the last 24 hours.")
