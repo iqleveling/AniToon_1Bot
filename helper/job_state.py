@@ -47,6 +47,11 @@ class JobManager:
         async with self._lock:
             return self._jobs.get(job_id)
 
+    async def get_all_jobs(self) -> list[Job]:
+        """Return a snapshot of every live job without exposing internal state."""
+        async with self._lock:
+            return list(self._jobs.values())
+
     async def get_user_jobs(self, user_id: int) -> list[Job]:
         async with self._lock:
             ids = list(self._user_jobs.get(int(user_id), []))
