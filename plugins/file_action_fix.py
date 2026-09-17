@@ -47,16 +47,20 @@ async def _show_upload_start(status: Message | None, filename: str):
         pass
 
 
-async def _send_video(client: Client, job: Job, path: str, filename: str, status: Message | None = None):
+async def _send_video(client: Client, job: Job, path: str, filename: str, status: Message | None = None, *, prepared_video: bool = False):
     await _show_upload_start(status, filename)
-    upload_path, upload_name, _duration, _width, _height = await _prepare_video(job, path, filename)
+    if prepared_video:
+        upload_path = path
+        upload_name = filename
+    else:
+        upload_path, upload_name, _duration, _width, _height = await _prepare_video(job, path, filename)
     try:
-        result = await upload_job(client, job, upload_path, upload_name, status, as_video=True)
+        result = await upload_job(client, job, upload_path, upload_name, status, as_video=True, prepared_video=prepared_video)
         if not result:
             raise RuntimeError("Telegram returned no video message after upload")
         return result
     finally:
-        if upload_path != path:
+        if not prepared_video and upload_path != path:
             try:
                 os.remove(upload_path)
             except OSError:
@@ -76,11 +80,12 @@ async def _send_plain_output(client: Client, job: Job, path: str, filename: str,
     return result
 
 
-async def _deliver_output(client: Client, job: Job, path: str, filename: str, status: Message | None = None):
+async def _deliver_output(client: Client, job: Job, path: str, filename: str, status: Message | None = None, *, prepared_video: bool = False):
     if _extension(filename) == "mp4" or (job.mime_type or "") == "video/mp4":
         if is_large_video(path):
             parts = await split_video_for_telegram(path, job.work_dir, filename)
             return [await _send_video(client, job, part, os.path.basename(part), status) for part in parts]
+        return [await _send_video(client, job, path, filename, status, prepared_video=prepared_video)]
     parts = await split_file_for_telegram(path, job.work_dir, filename)
     if len(parts) > 1:
         return [await _send_plain_output(client, job, part, os.path.basename(part), status) for part in parts]
