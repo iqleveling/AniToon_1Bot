@@ -13,31 +13,42 @@ from plugins.ui import main_menu
 
 log = logging.getLogger(__name__)
 
-PRIVATE_FORCE_SUB_CHAT_ID = -1002732670564
-
-FORCE_SUB_CHANNELS = [
-    {"name": "Channel 1", "chat": "@Anitoon_edit", "link": "https://t.me/Anitoon_edit"},
-    {"name": "Channel 2", "chat": "@anitoons_ani", "link": "https://t.me/anitoons_ani"},
-    {"name": "Channel 3", "chat": "@mangauniverse_ani", "link": "https://t.me/mangauniverse_ani"},
-    {"name": "Channel 4", "chat": PRIVATE_FORCE_SUB_CHAT_ID, "link": Config.FORCE_SUB_PRIVATE_LINK},
-]
-
 
 def _force_sub_client(client: Client) -> Client:
     """Use the main bot for force-sub checks when this handler runs on a clone."""
     return getattr(client, "force_sub_client", None) or client
 
 
+def _split_csv(value: str) -> list[str]:
+    return [part.strip().lstrip("@") for part in str(value or "").split(",") if part.strip()]
+
+
 def _configured_force_sub_channels() -> list[dict]:
-    """Return the complete force-sub configuration without relying on a fragile next()."""
-    channels = [dict(channel) for channel in FORCE_SUB_CHANNELS]
-    if not any(str(channel.get("chat")) == str(PRIVATE_FORCE_SUB_CHAT_ID) for channel in channels):
+    """Build the force-sub list from the public channel environment variables."""
+    usernames = _split_csv(Config.FORCE_SUB)
+    links = [part.strip() for part in str(Config.FORCE_SUB_LINKS or "").split(",") if part.strip()]
+
+    channels = []
+    for index, username in enumerate(usernames):
+        link = links[index] if index < len(links) else f"https://t.me/{username}"
         channels.append({
-            "name": "Channel 4",
-            "chat": PRIVATE_FORCE_SUB_CHAT_ID,
-            "link": Config.FORCE_SUB_PRIVATE_LINK,
+            "name": username,
+            "chat": f"@{username}",
+            "link": link,
         })
+
+    # Safe defaults for a deployment where FORCE_SUB has not been entered yet.
+    if not channels:
+        defaults = ["Anitoon_edit", "anitoons_ani", "mangauniverse_ani", "ani_seas"]
+        channels = [
+            {"name": username, "chat": f"@{username}", "link": f"https://t.me/{username}"}
+            for username in defaults
+        ]
     return channels
+
+
+# Public force-sub channels. There is intentionally no private-channel handling.
+FORCE_SUB_CHANNELS = _configured_force_sub_channels()
 
 
 def _valid_join_link(value) -> bool:
@@ -49,62 +60,6 @@ def _valid_join_link(value) -> bool:
         "http://telegram.me/",
         "tg://",
     ))
-
-
-async def _ensure_private_force_sub_link(client: Client) -> str:
-    client = _force_sub_client(client)
-    channels = _configured_force_sub_channels()
-    channel = next((c for c in channels if str(c.get("chat")) == str(PRIVATE_FORCE_SUB_CHAT_ID)), None)
-    if channel is None:
-        return ""
-
-    configured = str(channel.get("link") or "").strip()
-    if configured and _valid_join_link(configured):
-        for item in FORCE_SUB_CHANNELS:
-            if str(item.get("chat")) == str(PRIVATE_FORCE_SUB_CHAT_ID):
-                item["link"] = configured
-                break
-        return configured
-
-    if configured and not _valid_join_link(configured):
-        log.warning("Force-sub: invalid FORCE_SUB_PRIVATE_LINK configured; generating a valid invite")
-        configured = ""
-
-    try:
-        invite = await client.create_chat_invite_link(
-            PRIVATE_FORCE_SUB_CHAT_ID,
-            name="AniToon Force Sub",
-            creates_join_request=True,
-        )
-        channel["link"] = invite.invite_link
-        for item in FORCE_SUB_CHANNELS:
-            if str(item.get("chat")) == str(PRIVATE_FORCE_SUB_CHAT_ID):
-                item["link"] = invite.invite_link
-                break
-        log.info("Force-sub: created private invite link for Channel 4")
-        return invite.invite_link
-    except Exception:
-        log.exception("Force-sub: could not create private invite link")
-        return ""
-
-
-@Client.on_chat_join_request(filters.chat(PRIVATE_FORCE_SUB_CHAT_ID), group=-100)
-async def private_force_sub_join_request(client: Client, request):
-    """Automatically approve private-channel join requests using the main bot."""
-    user = getattr(request, "from_user", None)
-    if not user:
-        return
-    try:
-        approval_client = _force_sub_client(client)
-        await approval_client.approve_chat_join_request(PRIVATE_FORCE_SUB_CHAT_ID, user.id)
-        await db.clear_force_sub_request(user.id, PRIVATE_FORCE_SUB_CHAT_ID)
-        log.info("Force-sub: automatically approved private-channel request user=%s", user.id)
-    except Exception:
-        log.exception("Force-sub: failed to approve private-channel request user=%s", user.id)
-        try:
-            await db.mark_force_sub_request(user.id, PRIVATE_FORCE_SUB_CHAT_ID)
-        except Exception:
-            pass
 
 
 def _normalize_status(status) -> str:
@@ -122,26 +77,15 @@ def _normalize_status(status) -> str:
 
 
 async def _check_one_channel(client: Client, user_id: int, channel: dict):
+    """Return True=joined, False=confirmed missing, None=verification error."""
     try:
         member = await client.get_chat_member(chat_id=channel["chat"], user_id=user_id)
         status = _normalize_status(getattr(member, "status", None))
+
         if status in {"owner", "administrator", "member"}:
-            if str(channel.get("chat")) == str(PRIVATE_FORCE_SUB_CHAT_ID):
-                try:
-                    await db.clear_force_sub_request(user_id, PRIVATE_FORCE_SUB_CHAT_ID)
-                except Exception:
-                    pass
             return True
         if status == "restricted":
-            is_member = getattr(member, "is_member", None)
-            if is_member is True:
-                if str(channel.get("chat")) == str(PRIVATE_FORCE_SUB_CHAT_ID):
-                    try:
-                        await db.clear_force_sub_request(user_id, PRIVATE_FORCE_SUB_CHAT_ID)
-                    except Exception:
-                        pass
-                return True
-            return False
+            return bool(getattr(member, "is_member", False))
         if status in {"left", "kicked", "banned"}:
             return False
         return None
@@ -153,10 +97,14 @@ async def _check_one_channel(client: Client, user_id: int, channel: dict):
 
 
 async def get_force_sub_status(client: Client, user_id: int):
-    """Return membership status and ONLY list channels the user has not joined."""
+    """Check every public channel and return only channels the user has not joined."""
     checker = _force_sub_client(client)
-    await _ensure_private_force_sub_link(checker)
     channels = _configured_force_sub_channels()
+
+    # Keep the exported list synchronized with Render environment variables.
+    FORCE_SUB_CHANNELS.clear()
+    FORCE_SUB_CHANNELS.extend(channels)
+
     results = await asyncio.gather(
         *[_check_one_channel(checker, user_id, channel) for channel in channels]
     )
@@ -168,6 +116,7 @@ async def get_force_sub_status(client: Client, user_id: int):
         if result is True:
             joined_count += 1
         elif result is False:
+            # Only a confirmed non-member gets a Join button.
             missing_channels.append(channel)
         else:
             failed_channels.append(channel)
@@ -176,25 +125,24 @@ async def get_force_sub_status(client: Client, user_id: int):
 
 
 def make_force_sub_text(joined_count: int, missing_count: int, failed_count: int = 0):
-    total = len(_configured_force_sub_channels())
-    remaining = missing_count + failed_count
+    total = len(FORCE_SUB_CHANNELS)
     text = (
         "🔒 **Join Required Channels**\n\n"
         "To use AniToon, please join all required channels.\n\n"
         f"📊 **Joined:** `{joined_count}/{total}`\n"
-        f"❗ **Remaining:** `{remaining}`\n"
+        f"❗ **Remaining:** `{missing_count}`\n"
     )
     if failed_count:
         text += (
-            "\n⚠️ I could not verify one or more channels right now. "
-            "Those channels are **not** marked as needing a join. "
-            "Please press **🔄 Check & Retry**."
+            f"⚠️ **Verification pending:** `{failed_count}` channel(s).\n\n"
+            "I will not show a Join button for a channel until Telegram confirms "
+            "that you are not a member. Press **🔄 Check & Retry**."
         )
     return text + "\n\nTap only the channels below that you still need to join."
 
 
 def make_force_sub_keyboard(missing_channels, failed_channels=None):
-    """Render join buttons ONLY for confirmed-missing channels."""
+    """Show Join buttons only for channels confirmed as not joined."""
     rows = []
     seen = set()
     for channel in missing_channels or []:
@@ -208,7 +156,7 @@ def make_force_sub_keyboard(missing_channels, failed_channels=None):
 
 
 def _force_sub_error_keyboard():
-    """Fallback keyboard when membership verification itself cannot run."""
+    """Fallback used only when Telegram membership checks cannot run at all."""
     rows = []
     seen = set()
     for channel in _configured_force_sub_channels():
@@ -227,19 +175,47 @@ async def send_force_sub_message(client: Client, message: Message):
         log.exception("Force-sub status check failed for user %s", message.from_user.id)
         await message.reply_text(
             "⚠️ **Channel verification is temporarily unavailable.**\n\n"
-            "Please use the channel buttons below, then press **🔄 Check & Retry**.",
+            "Please try again in a moment, then press **🔄 Check & Retry**.",
             reply_markup=_force_sub_error_keyboard(),
         )
         return False
 
-    total = len(_configured_force_sub_channels())
+    total = len(FORCE_SUB_CHANNELS)
     if joined_count == total and not missing_channels and not failed_channels:
         return True
+
     await message.reply_text(
         make_force_sub_text(joined_count, len(missing_channels), len(failed_channels)),
-        reply_markup=make_force_sub_keyboard(missing_channels),
+        reply_markup=make_force_sub_keyboard(missing_channels, failed_channels),
     )
     return False
+
+
+@Client.on_callback_query(filters.regex(r"^check_force_sub$"), group=-100)
+async def check_force_sub_callback(client: Client, callback_query):
+    """Re-check membership after the user joins one or more public channels."""
+    if not callback_query.from_user:
+        return await callback_query.answer()
+    try:
+        await callback_query.answer("Checking your channel membership…")
+        joined_count, missing_channels, failed_channels = await get_force_sub_status(
+            client, callback_query.from_user.id
+        )
+        if not missing_channels and not failed_channels:
+            text = "✅ **Verification complete!**\n\nYou have joined all required channels."
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🏠 Home", callback_data="start")]
+            ])
+        else:
+            text = make_force_sub_text(joined_count, len(missing_channels), len(failed_channels))
+            keyboard = make_force_sub_keyboard(missing_channels, failed_channels)
+        try:
+            await callback_query.message.edit_text(text, reply_markup=keyboard)
+        except Exception:
+            await callback_query.message.reply_text(text, reply_markup=keyboard)
+    except Exception:
+        log.exception("Force-sub callback failed for user %s", callback_query.from_user.id)
+        await callback_query.answer("Verification failed. Please try again.", show_alert=True)
 
 
 @Client.on_message(filters.private & filters.command("start"))
@@ -258,7 +234,7 @@ async def start(client: Client, message: Message):
             log.exception("Start: force-sub verification crashed for user %s", user_id)
             await message.reply_text(
                 "⚠️ **Channel verification is temporarily unavailable.**\n\n"
-                "Please use the required channel buttons below, then press **🔄 Check & Retry**.",
+                "Please try again in a moment, then press **🔄 Check & Retry**.",
                 reply_markup=_force_sub_error_keyboard(),
             )
             return
@@ -266,7 +242,7 @@ async def start(client: Client, message: Message):
         if missing_channels or failed_channels:
             await message.reply_text(
                 make_force_sub_text(joined_count, len(missing_channels), len(failed_channels)),
-                reply_markup=make_force_sub_keyboard(missing_channels),
+                reply_markup=make_force_sub_keyboard(missing_channels, failed_channels),
             )
             return
 
