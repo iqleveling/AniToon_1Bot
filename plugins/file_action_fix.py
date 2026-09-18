@@ -124,6 +124,10 @@ async def repaired_file_download(client: Client, message: Message):
     if not media:
         raise StopPropagation
     expected_size = int(getattr(media, "file_size", 0) or 0)
+    from config import Config
+    if expected_size > Config.MAX_FILE_SIZE_BYTES:
+        await message.reply_text("🚫 **File is too large.**\\n\\nMaximum allowed file size is `2 GB` per file.")
+        raise StopPropagation
     if used + expected_size > plan.daily_limit:
         await message.reply_text("🚫 **This file exceeds your remaining daily quota.**\n\n" f"Plan: {plan.name}\nRemaining: `{humanbytes(max(plan.daily_limit - used, 0))}`\nFile: `{humanbytes(expected_size)}`")
         raise StopPropagation
