@@ -24,3 +24,5 @@ class Config:
     FFMPEG_PRESET = os.getenv("FFMPEG_PRESET", "ultrafast").strip() or "ultrafast"
     FFMPEG_THREADS = max(0, int(os.getenv("FFMPEG_THREADS", "0")))
     PROGRESS_UPDATE_INTERVAL = max(1.0, float(os.getenv("PROGRESS_UPDATE_INTERVAL", "1.5")))
+    # Maximum accepted incoming media size: 2 GiB per file.
+    MAX_FILE_SIZE_BYTES = 2 * 1024 * 1024 * 1024
